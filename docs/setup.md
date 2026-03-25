@@ -33,11 +33,10 @@ cp .env.example .env
 ```
 WEBHOOK_PASSPHRASE=your-secret-passphrase   # TradingViewアラートと同じ値を設定
 
-# IG証券（IG証券を使う場合のみ）
-IG_API_KEY=your-ig-api-key
-IG_USERNAME=your-ig-username
-IG_PASSWORD=your-ig-password
-IG_ACC_TYPE=DEMO   # テスト時は必ずDEMO
+# OANDA証券（OANDAを使う場合のみ）
+OANDA_API_KEY=your-oanda-personal-access-token
+OANDA_ACCOUNT_ID=your-account-id
+OANDA_ENV=PRACTICE   # テスト時は必ずPRACTICE
 
 # moomoo証券（moomooを使う場合のみ）
 MOOMOO_HOST=127.0.0.1
