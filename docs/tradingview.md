@@ -12,35 +12,65 @@ TradingView のアラート作成画面で以下を設定します。
 
 アラートの「Message」欄に以下のJSON形式で入力してください。
 
-### IG証券への発注
+### OANDA証券への発注
 
 **買い注文（FX: USD/JPY）**
 ```json
 {
   "passphrase": "your-secret-passphrase",
-  "broker": "ig",
+  "broker": "oanda",
   "asset_class": "FX",
   "action": "buy",
   "ticker": "USDJPY",
-  "quantity": 1
+  "quantity": 1000
 }
 ```
 
-**売り注文（FX: USD/JPY）**
+**売り注文（米国株CFD: Apple）**
 ```json
 {
   "passphrase": "your-secret-passphrase",
-  "broker": "ig",
-  "asset_class": "FX",
+  "broker": "oanda",
+  "asset_class": "US",
   "action": "sell",
-  "ticker": "USDJPY",
+  "ticker": "AAPL",
   "quantity": 1
 }
 ```
 
-> **注意**: IG証券の `ticker`（`epic`）はIG独自の識別子です。
-> 例: USD/JPYは `CS.D.USDJPY.MINI.IP` など。
-> IG APIの「Market Navigation」または取引画面で確認してください。
+**買い注文（指数CFD: NASDAQ100）**
+```json
+{
+  "passphrase": "your-secret-passphrase",
+  "broker": "oanda",
+  "asset_class": "INDEX",
+  "action": "buy",
+  "ticker": "NAS100",
+  "quantity": 1
+}
+```
+
+**買い注文（商品CFD: 金）**
+```json
+{
+  "passphrase": "your-secret-passphrase",
+  "broker": "oanda",
+  "asset_class": "COMMODITY",
+  "action": "buy",
+  "ticker": "XAUUSD",
+  "quantity": 1
+}
+```
+
+> **OANDA instrument 変換ルール**: `asset_class` に応じて TradingView ティッカーを自動変換します。
+>
+> | asset_class | TradingView 例 | OANDA instrument |
+> |---|---|---|
+> | `FX` / `COMMODITY` | `USDJPY` | `USD_JPY` |
+> | `US` / `INDEX` | `AAPL` | `AAPL_USD` |
+> | その他 | `USD_JPY` | そのまま使用 |
+>
+> OANDA instrument を直接指定したい場合は、`asset_class` に上記以外の値（例: `"RAW"`）を指定するとパススルーされます。
 
 ### moomoo証券への発注
 
@@ -81,25 +111,25 @@ curl -X POST http://localhost:8080/webhook \
   -H "Content-Type: application/json" \
   -d '{
     "passphrase": "wrong-passphrase",
-    "broker": "ig",
+    "broker": "oanda",
     "asset_class": "FX",
     "action": "buy",
     "ticker": "USDJPY",
-    "quantity": 1
+    "quantity": 1000
   }'
 ```
 
-**IG証券テスト（DEMO口座）**
+**OANDA証券テスト（PRACTICE口座）**
 ```bash
 curl -X POST http://localhost:8080/webhook \
   -H "Content-Type: application/json" \
   -d '{
     "passphrase": "your-secret-passphrase",
-    "broker": "ig",
+    "broker": "oanda",
     "asset_class": "FX",
     "action": "buy",
-    "ticker": "CS.D.USDJPY.MINI.IP",
-    "quantity": 1
+    "ticker": "USDJPY",
+    "quantity": 1000
   }'
 ```
 
