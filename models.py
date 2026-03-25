@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 
 class WebhookPayload(BaseModel):
     passphrase: str
-    broker: Literal["ig", "moomoo"]
+    broker: Literal["oanda", "moomoo"]
     asset_class: str
     action: Literal["buy", "sell"]
     ticker: str
