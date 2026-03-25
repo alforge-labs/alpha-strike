@@ -1,6 +1,6 @@
 """TradingView Webhook サーバー
 
-TradingViewからのアラート（JSON）を受け取り、IG証券またはmoomoo証券へ注文をルーティングします。
+TradingViewからのアラート（JSON）を受け取り、OANDA証券またはmoomoo証券へ注文をルーティングします。
 
 起動:
     uv run uvicorn webhook_server:app --host 0.0.0.0 --port 8080 --reload
@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 
-from handlers import ig_order_handler, moomoo_order_handler
+from handlers import oanda_order_handler, moomoo_order_handler
 from models import OrderResult, WebhookPayload
 
 load_dotenv()
@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Alpha-Strike Webhook Server",
-    description="TradingViewアラートをIG証券・moomoo証券へ自動ルーティングするWebhookサーバー",
+    description="TradingViewアラートをOANDA証券・moomoo証券へ自動ルーティングするWebhookサーバー",
     version="0.1.0",
     lifespan=lifespan,
 )
@@ -66,8 +66,8 @@ async def receive_webhook(payload: WebhookPayload) -> OrderResult:
     )
 
     try:
-        if payload.broker == "ig":
-            result = ig_order_handler(payload)
+        if payload.broker == "oanda":
+            result = oanda_order_handler(payload)
         else:  # "moomoo" — Literalで保証済み
             result = moomoo_order_handler(payload)
 
