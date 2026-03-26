@@ -11,6 +11,8 @@ import os
 import socket
 from typing import TYPE_CHECKING, Union
 
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
+
 from models import WebhookPayload
 
 logger = logging.getLogger(__name__)
@@ -80,10 +82,19 @@ def moomoo_order_handler(payload: WebhookPayload) -> dict:
         trd_env_str, payload.ticker, payload.action, payload.quantity,
     )
 
-    # OpenD への接続可否を事前確認（タイムアウト3秒）
-    try:
+    # OpenD への接続可否を事前確認（タイムアウト3秒、最大3回リトライ）
+    @retry(
+        retry=retry_if_exception_type((OSError, socket.timeout)),
+        wait=wait_fixed(2),
+        stop=stop_after_attempt(3),
+        reraise=True,
+    )
+    def _check_opend_connection() -> None:
         with socket.create_connection((host, port), timeout=3):
             pass
+
+    try:
+        _check_opend_connection()
     except (OSError, socket.timeout) as e:
         logger.error("OpenD に接続できません (%s:%s): %s", host, port, e)
         raise RuntimeError(

@@ -4,6 +4,7 @@ import logging
 import os
 
 import requests
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from models import WebhookPayload
 
@@ -11,6 +12,26 @@ logger = logging.getLogger(__name__)
 
 OANDA_PRACTICE_URL = "https://api-fxpractice.oanda.com"
 OANDA_LIVE_URL = "https://api-fxtrade.oanda.com"
+
+
+def _is_retryable_oanda_error(exc: Exception) -> bool:
+    """5xx エラーおよびネットワーク一時障害のみリトライ対象とする。4xx（設定ミス等）はリトライしない。"""
+    if isinstance(exc, requests.HTTPError):
+        return exc.response is not None and exc.response.status_code >= 500
+    return isinstance(exc, (requests.ConnectionError, requests.Timeout))
+
+
+@retry(
+    retry=retry_if_exception(_is_retryable_oanda_error),
+    wait=wait_exponential(multiplier=1, min=1, max=10),
+    stop=stop_after_attempt(3),
+    reraise=True,
+)
+def _call_oanda_api(url: str, body: dict, headers: dict) -> dict:
+    """OANDA REST API を呼び出す。一時障害（5xx、接続エラー）は最大3回リトライする。"""
+    response = requests.post(url, json=body, headers=headers, timeout=10)
+    response.raise_for_status()
+    return response.json()
 
 
 def _to_oanda_instrument(ticker: str, asset_class: str) -> str:
@@ -77,10 +98,7 @@ def oanda_order_handler(payload: WebhookPayload) -> dict:
     url = f"{base_url}/v3/accounts/{account_id}/orders"
     logger.info("OANDA注文送信: instrument=%s units=%s env=%s", instrument, units, oanda_env)
 
-    response = requests.post(url, json=body, headers=headers, timeout=10)
-    response.raise_for_status()
-
-    data = response.json()
+    data = _call_oanda_api(url, body, headers)
     order_id = data.get("orderCreateTransaction", {}).get("id", "unknown")
 
     logger.info("OANDA注文成功: order_id=%s instrument=%s", order_id, instrument)
