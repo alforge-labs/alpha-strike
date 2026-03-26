@@ -130,7 +130,7 @@ async def test_moomoo_handler_called_for_moomoo_broker(client):
         "ticker": "US.AAPL",
         "quantity": 10,
     }
-    with patch("handlers.moomoo_handler.moomoo_order_handler", return_value={"order_id": "42", "ret_code": 0}) as mock_handler:
+    with patch("handlers.moomoo_handler.moomoo_order_handler", return_value={"order_id": "42", "ret_code": 0}):
         # moomoo_order_handler を直接パッチ
         with patch("webhook_server.moomoo_order_handler", return_value={"order_id": "42", "ret_code": 0}):
             response = await client.post("/webhook", json=moomoo_payload)
@@ -138,3 +138,57 @@ async def test_moomoo_handler_called_for_moomoo_broker(client):
     assert response.status_code == 200
     data = response.json()
     assert data["broker"] == "moomoo"
+
+
+# --- /health/ready エンドポイントのテスト ---
+
+@pytest.mark.anyio
+async def test_health_ready_all_ok(client, monkeypatch):
+    """/health/ready: 全依存性が正常な場合 HTTP 200 を返す。"""
+    from unittest.mock import patch
+
+    monkeypatch.setenv("OANDA_API_KEY", "test-key")
+    monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account")
+
+    with patch("webhook_server.socket.create_connection"):
+        response = await client.get("/health/ready")
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "ready"
+    assert data["checks"]["oanda"]["status"] == "ok"
+    assert data["checks"]["moomoo"]["status"] == "ok"
+
+
+@pytest.mark.anyio
+async def test_health_ready_oanda_missing_env(client, monkeypatch):
+    """/health/ready: OANDA 環境変数未設定時は degraded (HTTP 503) を返す。"""
+    from unittest.mock import patch
+
+    monkeypatch.delenv("OANDA_API_KEY", raising=False)
+    monkeypatch.delenv("OANDA_ACCOUNT_ID", raising=False)
+
+    with patch("webhook_server.socket.create_connection"):
+        response = await client.get("/health/ready")
+
+    assert response.status_code == 503
+    data = response.json()
+    assert data["status"] == "degraded"
+    assert data["checks"]["oanda"]["status"] == "error"
+
+
+@pytest.mark.anyio
+async def test_health_ready_moomoo_opend_unreachable(client, monkeypatch):
+    """/health/ready: OpenD が起動していない場合は degraded (HTTP 503) を返す。"""
+    from unittest.mock import patch
+
+    monkeypatch.setenv("OANDA_API_KEY", "test-key")
+    monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account")
+
+    with patch("webhook_server.socket.create_connection", side_effect=OSError("接続拒否")):
+        response = await client.get("/health/ready")
+
+    assert response.status_code == 503
+    data = response.json()
+    assert data["status"] == "degraded"
+    assert data["checks"]["moomoo"]["status"] == "error"

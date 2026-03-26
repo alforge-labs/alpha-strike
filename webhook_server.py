@@ -9,6 +9,7 @@ TradingViewからのアラート（JSON）を受け取り、OANDA証券または
 import hmac
 import logging
 import os
+import socket
 import sys
 from contextlib import asynccontextmanager
 
@@ -107,8 +108,51 @@ async def receive_webhook(request: Request, payload: WebhookPayload) -> OrderRes
 
 @app.get("/health")
 async def health_check() -> dict:
-    """サーバーの死活確認用エンドポイント。"""
+    """サーバーの死活確認用エンドポイント（liveness probe）。"""
     return {"status": "ok"}
+
+
+@app.get("/health/ready")
+async def health_ready() -> dict:
+    """依存サービスの疎通を確認する readiness probe。
+
+    - OANDA: 環境変数の存在を確認
+    - moomoo: OpenD への TCP 接続を確認
+
+    全チェック通過時: HTTP 200 {"status": "ready", ...}
+    いずれか失敗時: HTTP 503 {"status": "degraded", ...}
+    """
+    checks: dict[str, dict] = {}
+
+    # OANDA チェック: 環境変数の存在確認
+    oanda_key = os.getenv("OANDA_API_KEY", "")
+    oanda_account = os.getenv("OANDA_ACCOUNT_ID", "")
+    if oanda_key and oanda_account:
+        checks["oanda"] = {"status": "ok"}
+    else:
+        missing = []
+        if not oanda_key:
+            missing.append("OANDA_API_KEY")
+        if not oanda_account:
+            missing.append("OANDA_ACCOUNT_ID")
+        checks["oanda"] = {"status": "error", "detail": f"環境変数未設定: {', '.join(missing)}"}
+
+    # moomoo チェック: OpenD への TCP 接続確認
+    moomoo_host = os.getenv("MOOMOO_HOST", "127.0.0.1")
+    moomoo_port = int(os.getenv("MOOMOO_PORT", "11111"))
+    try:
+        with socket.create_connection((moomoo_host, moomoo_port), timeout=3):
+            pass
+        checks["moomoo"] = {"status": "ok"}
+    except (OSError, socket.timeout) as e:
+        checks["moomoo"] = {"status": "error", "detail": f"OpenD ({moomoo_host}:{moomoo_port}) に接続できません: {e}"}
+
+    all_ok = all(c["status"] == "ok" for c in checks.values())
+    status = "ready" if all_ok else "degraded"
+    http_status = 200 if all_ok else 503
+
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=http_status, content={"status": status, "checks": checks})
 
 
 if __name__ == "__main__":
