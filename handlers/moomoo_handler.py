@@ -9,10 +9,14 @@ OpenD を先に起動してからサーバーを起動してください。
 import logging
 import os
 import socket
+from typing import TYPE_CHECKING, Union
 
 from models import WebhookPayload
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    import futu
 
 try:
     import futu
@@ -22,7 +26,11 @@ except ImportError:
     logger.warning("futu-api がインポートできません。moomoo注文は実行時に失敗します。OpenDが起動しているか確認してください。")
 
 
-def _get_trade_context(asset_class: str, host: str, port: int, trd_env):
+def _get_trade_context(
+    asset_class: str,
+    host: str,
+    port: int,
+) -> "Union[futu.OpenUSTradeContext, futu.OpenHKTradeContext]":
     """asset_class に基づいてトレードコンテキストを返す。
 
     対応: "HK" → OpenHKTradeContext, その他（"US"等）→ OpenUSTradeContext
@@ -83,7 +91,7 @@ def moomoo_order_handler(payload: WebhookPayload) -> dict:
         ) from e
 
     try:
-        ctx = _get_trade_context(payload.asset_class, host, port, trd_env)
+        ctx = _get_trade_context(payload.asset_class, host, port)
         with ctx:
             ret_code, data = ctx.place_order(
                 price=0,
@@ -98,7 +106,16 @@ def moomoo_order_handler(payload: WebhookPayload) -> dict:
                 logger.error("moomoo注文失敗: ticker=%s ret_code=%s data=%s", payload.ticker, ret_code, data)
                 raise RuntimeError(f"moomoo注文エラー: {data}")
 
-            order_id = data["order_id"].values[0] if hasattr(data, "values") else str(data)
+            try:
+                if hasattr(data, "empty") and not data.empty and "order_id" in data.columns:
+                    order_id = str(data["order_id"].iloc[0])
+                else:
+                    order_id = str(data)
+                    logger.warning("order_idの取得に失敗。レスポンス全体を使用: %s", data)
+            except (AttributeError, KeyError, IndexError) as e:
+                logger.warning("order_idのパース失敗: %s。レスポンス全体を使用。", e)
+                order_id = str(data)
+
             logger.info("moomoo注文成功: order_id=%s", order_id)
             return {"order_id": order_id, "ret_code": ret_code}
 
