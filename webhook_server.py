@@ -15,6 +15,7 @@ from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -124,20 +125,16 @@ async def health_ready() -> dict:
     """
     checks: dict[str, dict] = {}
 
-    # OANDA チェック: 環境変数の存在確認
+    # OANDA チェック: 環境変数の存在確認（詳細は内部ログのみ、レスポンスには含めない）
     oanda_key = os.getenv("OANDA_API_KEY", "")
     oanda_account = os.getenv("OANDA_ACCOUNT_ID", "")
     if oanda_key and oanda_account:
         checks["oanda"] = {"status": "ok"}
     else:
-        missing = []
-        if not oanda_key:
-            missing.append("OANDA_API_KEY")
-        if not oanda_account:
-            missing.append("OANDA_ACCOUNT_ID")
-        checks["oanda"] = {"status": "error", "detail": f"環境変数未設定: {', '.join(missing)}"}
+        logger.warning("OANDA 設定が不完全です: API_KEY=%s ACCOUNT_ID=%s", bool(oanda_key), bool(oanda_account))
+        checks["oanda"] = {"status": "error", "detail": "OANDA の設定が不完全です"}
 
-    # moomoo チェック: OpenD への TCP 接続確認
+    # moomoo チェック: OpenD への TCP 接続確認（詳細は内部ログのみ）
     moomoo_host = os.getenv("MOOMOO_HOST", "127.0.0.1")
     moomoo_port = int(os.getenv("MOOMOO_PORT", "11111"))
     try:
@@ -145,13 +142,13 @@ async def health_ready() -> dict:
             pass
         checks["moomoo"] = {"status": "ok"}
     except (OSError, socket.timeout) as e:
-        checks["moomoo"] = {"status": "error", "detail": f"OpenD ({moomoo_host}:{moomoo_port}) に接続できません: {e}"}
+        logger.warning("OpenD への接続確認に失敗: %s", e)
+        checks["moomoo"] = {"status": "error", "detail": "OpenD に接続できません"}
 
     all_ok = all(c["status"] == "ok" for c in checks.values())
     status = "ready" if all_ok else "degraded"
     http_status = 200 if all_ok else 503
 
-    from fastapi.responses import JSONResponse
     return JSONResponse(status_code=http_status, content={"status": status, "checks": checks})
 
 

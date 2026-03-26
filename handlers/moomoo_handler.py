@@ -28,6 +28,18 @@ except ImportError:
     logger.warning("futu-api がインポートできません。moomoo注文は実行時に失敗します。OpenDが起動しているか確認してください。")
 
 
+@retry(
+    retry=retry_if_exception_type((OSError, socket.timeout)),
+    wait=wait_fixed(2),
+    stop=stop_after_attempt(3),
+    reraise=True,
+)
+def _check_opend_connection(host: str, port: int) -> None:
+    """OpenD への TCP 接続確認。一時障害に対して最大3回リトライする。"""
+    with socket.create_connection((host, port), timeout=3):
+        pass
+
+
 def _get_trade_context(
     asset_class: str,
     host: str,
@@ -83,18 +95,8 @@ def moomoo_order_handler(payload: WebhookPayload) -> dict:
     )
 
     # OpenD への接続可否を事前確認（タイムアウト3秒、最大3回リトライ）
-    @retry(
-        retry=retry_if_exception_type((OSError, socket.timeout)),
-        wait=wait_fixed(2),
-        stop=stop_after_attempt(3),
-        reraise=True,
-    )
-    def _check_opend_connection() -> None:
-        with socket.create_connection((host, port), timeout=3):
-            pass
-
     try:
-        _check_opend_connection()
+        _check_opend_connection(host, port)
     except (OSError, socket.timeout) as e:
         logger.error("OpenD に接続できません (%s:%s): %s", host, port, e)
         raise RuntimeError(

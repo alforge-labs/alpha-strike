@@ -1,0 +1,28 @@
+# 機密情報・環境変数（絶対にイメージに含めないこと）
+.env
+
+# Python キャッシュ
+__pycache__/
+*.py[oc]
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+
+# macOS
+.DS_Store
+
+# PM2 ログ
+logs/
+
+# ドキュメント（本番イメージ不要）
+docs/
+*.md

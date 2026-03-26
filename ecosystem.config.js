@@ -29,9 +29,8 @@ module.exports = {
       time: true, // タイムスタンプ付きログ
       log_date_format: "YYYY-MM-DD HH:mm:ss",
 
-      env: {
-        NODE_ENV: "production",
-      },
+      // 環境変数は .env ファイルまたはシステム環境変数で管理する
+      env: {},
     },
   ],
 };
