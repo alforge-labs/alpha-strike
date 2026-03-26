@@ -25,6 +25,8 @@ def _to_oanda_instrument(ticker: str, asset_class: str) -> str:
         return f"{ticker[:3]}_{ticker[3:]}"
     if asset_class in ("US", "INDEX") and "_" not in ticker:
         return f"{ticker}_USD"
+    if asset_class in ("FX", "COMMODITY") and len(ticker) != 6:
+        logger.warning("FX/COMMODITYの ticker が6文字ではありません。変換せずに送信します: %s", ticker)
     return ticker
 
 
@@ -79,7 +81,6 @@ def oanda_order_handler(payload: WebhookPayload) -> dict:
     response.raise_for_status()
 
     data = response.json()
-    order_fill = data.get("orderFillTransaction") or data.get("relatedTransactionIDs", [None])[0]
     order_id = data.get("orderCreateTransaction", {}).get("id", "unknown")
 
     logger.info("OANDA注文成功: order_id=%s instrument=%s", order_id, instrument)

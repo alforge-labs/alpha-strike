@@ -6,15 +6,19 @@ TradingViewからのアラート（JSON）を受け取り、OANDA証券または
     uv run uvicorn webhook_server:app --host 0.0.0.0 --port 8080 --reload
 """
 
+import hmac
 import logging
 import os
 import sys
 from contextlib import asynccontextmanager
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
-from handlers import oanda_order_handler, moomoo_order_handler
+from handlers import moomoo_order_handler, oanda_order_handler
 from models import OrderResult, WebhookPayload
 
 load_dotenv()
@@ -25,6 +29,8 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+limiter = Limiter(key_func=get_remote_address)
 
 
 @asynccontextmanager
@@ -45,10 +51,13 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
 @app.post("/webhook", response_model=OrderResult, status_code=200)
-async def receive_webhook(payload: WebhookPayload) -> OrderResult:
+@limiter.limit("10/minute")
+async def receive_webhook(request: Request, payload: WebhookPayload) -> OrderResult:  # noqa: ARG001
     """TradingViewからのWebhookを受け取り、指定ブローカーへ注文を送信する。
 
     - passphrase が環境変数と一致しない場合: 401 Unauthorized
@@ -56,7 +65,7 @@ async def receive_webhook(payload: WebhookPayload) -> OrderResult:
     - 注文失敗（ネットワーク、API拒否等）: 502 Bad Gateway
     """
     expected_passphrase = os.getenv("WEBHOOK_PASSPHRASE", "")
-    if payload.passphrase != expected_passphrase:
+    if not hmac.compare_digest(payload.passphrase, expected_passphrase):
         logger.warning("不正なパスフレーズでアクセスがありました")
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -86,14 +95,14 @@ async def receive_webhook(payload: WebhookPayload) -> OrderResult:
         raise
     except (ValueError, ImportError) as e:
         logger.error("設定エラー: %s", e)
-        raise HTTPException(status_code=500, detail=f"設定エラー: {e}") from e
+        raise HTTPException(status_code=500, detail="設定エラーが発生しました。管理者にお問い合わせください。") from e
     except Exception as e:
         logger.error(
             "注文失敗: broker=%s ticker=%s error=%s",
             payload.broker, payload.ticker, e,
             exc_info=True,
         )
-        raise HTTPException(status_code=502, detail=f"注文実行エラー: {e}") from e
+        raise HTTPException(status_code=502, detail="注文の実行に失敗しました。しばらくしてから再試行してください。") from e
 
 
 @app.get("/health")
