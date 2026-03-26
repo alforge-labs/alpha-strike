@@ -22,10 +22,13 @@ if TYPE_CHECKING:
 
 try:
     import futu
+
     FUTU_AVAILABLE = True
 except ImportError:
     FUTU_AVAILABLE = False
-    logger.warning("futu-api がインポートできません。moomoo注文は実行時に失敗します。OpenDが起動しているか確認してください。")
+    logger.warning(
+        "futu-api がインポートできません。moomoo注文は実行時に失敗します。OpenDが起動しているか確認してください。"
+    )
 
 
 @retry(
@@ -83,7 +86,9 @@ def moomoo_order_handler(payload: WebhookPayload) -> dict:
         "REAL": futu.TrdEnv.REAL,
     }
     if trd_env_str not in trd_env_map:
-        raise ValueError(f"MOOMOO_TRD_ENV は SIMULATE または REAL を指定してください（現在: {trd_env_str}）")
+        raise ValueError(
+            f"MOOMOO_TRD_ENV は SIMULATE または REAL を指定してください（現在: {trd_env_str}）"
+        )
 
     trd_env = trd_env_map[trd_env_str]
 
@@ -91,7 +96,10 @@ def moomoo_order_handler(payload: WebhookPayload) -> dict:
 
     logger.info(
         "moomoo注文開始: trd_env=%s ticker=%s action=%s qty=%s",
-        trd_env_str, payload.ticker, payload.action, payload.quantity,
+        trd_env_str,
+        payload.ticker,
+        payload.action,
+        payload.quantity,
     )
 
     # OpenD への接続可否を事前確認（タイムアウト3秒、最大3回リトライ）
@@ -116,15 +124,26 @@ def moomoo_order_handler(payload: WebhookPayload) -> dict:
             )
 
             if ret_code != futu.RET_OK:
-                logger.error("moomoo注文失敗: ticker=%s ret_code=%s data=%s", payload.ticker, ret_code, data)
+                logger.error(
+                    "moomoo注文失敗: ticker=%s ret_code=%s data=%s",
+                    payload.ticker,
+                    ret_code,
+                    data,
+                )
                 raise RuntimeError(f"moomoo注文エラー: {data}")
 
             try:
-                if hasattr(data, "empty") and not data.empty and "order_id" in data.columns:
+                if (
+                    hasattr(data, "empty")
+                    and not data.empty
+                    and "order_id" in data.columns
+                ):
                     order_id = str(data["order_id"].iloc[0])
                 else:
                     order_id = str(data)
-                    logger.warning("order_idの取得に失敗。レスポンス全体を使用: %s", data)
+                    logger.warning(
+                        "order_idの取得に失敗。レスポンス全体を使用: %s", data
+                    )
             except (AttributeError, KeyError, IndexError) as e:
                 logger.warning("order_idのパース失敗: %s。レスポンス全体を使用。", e)
                 order_id = str(data)
@@ -138,5 +157,10 @@ def moomoo_order_handler(payload: WebhookPayload) -> dict:
     except Exception as e:
         if isinstance(e, (ImportError, ValueError, RuntimeError)):
             raise
-        logger.error("moomoo注文で予期しないエラー: ticker=%s error=%s", payload.ticker, e, exc_info=True)
+        logger.error(
+            "moomoo注文で予期しないエラー: ticker=%s error=%s",
+            payload.ticker,
+            e,
+            exc_info=True,
+        )
         raise RuntimeError(f"moomoo注文失敗: {e}") from e

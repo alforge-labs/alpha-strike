@@ -40,7 +40,9 @@ async def lifespan(app: FastAPI):
     """起動時に必須環境変数を検証する。"""
     passphrase = os.getenv("WEBHOOK_PASSPHRASE", "")
     if not passphrase:
-        logger.critical("WEBHOOK_PASSPHRASE が設定されていません。サーバーを起動できません。")
+        logger.critical(
+            "WEBHOOK_PASSPHRASE が設定されていません。サーバーを起動できません。"
+        )
         sys.exit(1)
     logger.info("Alpha-Strike Webhook サーバー起動完了")
     yield
@@ -59,7 +61,9 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 @app.post("/webhook", response_model=OrderResult, status_code=200)
 @limiter.limit("10/minute")
-async def receive_webhook(request: Request, payload: WebhookPayload) -> OrderResult:  # noqa: ARG001
+async def receive_webhook(
+    request: Request, payload: WebhookPayload
+) -> OrderResult:  # noqa: ARG001
     """TradingViewからのWebhookを受け取り、指定ブローカーへ注文を送信する。
 
     - passphrase が環境変数と一致しない場合: 401 Unauthorized
@@ -73,7 +77,10 @@ async def receive_webhook(request: Request, payload: WebhookPayload) -> OrderRes
 
     logger.info(
         "Webhook受信: broker=%s ticker=%s action=%s qty=%s",
-        payload.broker, payload.ticker, payload.action, payload.quantity,
+        payload.broker,
+        payload.ticker,
+        payload.action,
+        payload.quantity,
     )
 
     try:
@@ -84,7 +91,10 @@ async def receive_webhook(request: Request, payload: WebhookPayload) -> OrderRes
 
         logger.info(
             "注文成功: broker=%s ticker=%s action=%s qty=%s",
-            payload.broker, payload.ticker, payload.action, payload.quantity,
+            payload.broker,
+            payload.ticker,
+            payload.action,
+            payload.quantity,
         )
         return OrderResult(
             status="success",
@@ -97,14 +107,22 @@ async def receive_webhook(request: Request, payload: WebhookPayload) -> OrderRes
         raise
     except (ValueError, ImportError) as e:
         logger.error("設定エラー: %s", e)
-        raise HTTPException(status_code=500, detail="設定エラーが発生しました。管理者にお問い合わせください。") from e
+        raise HTTPException(
+            status_code=500,
+            detail="設定エラーが発生しました。管理者にお問い合わせください。",
+        ) from e
     except Exception as e:
         logger.error(
             "注文失敗: broker=%s ticker=%s error=%s",
-            payload.broker, payload.ticker, e,
+            payload.broker,
+            payload.ticker,
+            e,
             exc_info=True,
         )
-        raise HTTPException(status_code=502, detail="注文の実行に失敗しました。しばらくしてから再試行してください。") from e
+        raise HTTPException(
+            status_code=502,
+            detail="注文の実行に失敗しました。しばらくしてから再試行してください。",
+        ) from e
 
 
 @app.get("/health")
@@ -131,7 +149,11 @@ async def health_ready() -> dict:
     if oanda_key and oanda_account:
         checks["oanda"] = {"status": "ok"}
     else:
-        logger.warning("OANDA 設定が不完全です: API_KEY=%s ACCOUNT_ID=%s", bool(oanda_key), bool(oanda_account))
+        logger.warning(
+            "OANDA 設定が不完全です: API_KEY=%s ACCOUNT_ID=%s",
+            bool(oanda_key),
+            bool(oanda_account),
+        )
         checks["oanda"] = {"status": "error", "detail": "OANDA の設定が不完全です"}
 
     # moomoo チェック: OpenD への TCP 接続確認（詳細は内部ログのみ）
@@ -149,9 +171,12 @@ async def health_ready() -> dict:
     status = "ready" if all_ok else "degraded"
     http_status = 200 if all_ok else 503
 
-    return JSONResponse(status_code=http_status, content={"status": status, "checks": checks})
+    return JSONResponse(
+        status_code=http_status, content={"status": status, "checks": checks}
+    )
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("webhook_server:app", host="0.0.0.0", port=8080, reload=False)
