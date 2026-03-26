@@ -1,0 +1,147 @@
+"""moomoo ハンドラーのユニットテスト"""
+
+import socket
+from unittest.mock import MagicMock, patch
+
+import pandas as pd
+import pytest
+
+import futu
+from handlers.moomoo_handler import _get_trade_context, moomoo_order_handler
+from models import WebhookPayload
+
+
+def _make_payload(**kwargs) -> WebhookPayload:
+    defaults = {
+        "passphrase": "test",
+        "broker": "moomoo",
+        "asset_class": "US",
+        "action": "buy",
+        "ticker": "US.AAPL",
+        "quantity": 10.0,
+    }
+    return WebhookPayload(**(defaults | kwargs))
+
+
+def _mock_ctx(ret_code=None, order_id="12345") -> MagicMock:
+    """place_order が成功を返す mock コンテキストを生成する。"""
+    if ret_code is None:
+        ret_code = futu.RET_OK
+    mock_data = pd.DataFrame({"order_id": [order_id]})
+    ctx = MagicMock()
+    ctx.__enter__ = MagicMock(return_value=ctx)
+    ctx.__exit__ = MagicMock(return_value=False)
+    ctx.place_order.return_value = (ret_code, mock_data)
+    return ctx
+
+
+# --- _get_trade_context のテスト ---
+
+class TestGetTradeContext:
+    def test_hk_returns_hk_context(self):
+        with patch("futu.OpenHKTradeContext") as mock_hk:
+            _get_trade_context("HK", "127.0.0.1", 11111)
+            mock_hk.assert_called_once_with(host="127.0.0.1", port=11111)
+
+    def test_us_returns_us_context(self):
+        with patch("futu.OpenUSTradeContext") as mock_us:
+            _get_trade_context("US", "127.0.0.1", 11111)
+            mock_us.assert_called_once_with(host="127.0.0.1", port=11111)
+
+    def test_index_returns_us_context(self):
+        with patch("futu.OpenUSTradeContext") as mock_us:
+            _get_trade_context("INDEX", "127.0.0.1", 11111)
+            mock_us.assert_called_once()
+
+    def test_hk_case_insensitive(self):
+        with patch("futu.OpenHKTradeContext") as mock_hk:
+            _get_trade_context("hk", "127.0.0.1", 11111)
+            mock_hk.assert_called_once()
+
+
+# --- moomoo_order_handler のテスト ---
+
+class TestMoomooOrderHandler:
+    def test_futu_not_available_raises_import_error(self):
+        with patch("handlers.moomoo_handler.FUTU_AVAILABLE", False):
+            with pytest.raises(ImportError, match="futu-api"):
+                moomoo_order_handler(_make_payload())
+
+    def test_invalid_trd_env_raises_value_error(self, monkeypatch):
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "INVALID")
+        with pytest.raises(ValueError, match="SIMULATE または REAL"):
+            moomoo_order_handler(_make_payload())
+
+    def test_opend_not_running_raises_runtime_error(self, monkeypatch):
+        monkeypatch.setenv("MOOMOO_HOST", "127.0.0.1")
+        monkeypatch.setenv("MOOMOO_PORT", "11111")
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+        with patch("socket.create_connection", side_effect=OSError("Connection refused")):
+            with pytest.raises(RuntimeError, match="OpenD"):
+                moomoo_order_handler(_make_payload())
+
+    def test_socket_timeout_raises_runtime_error(self, monkeypatch):
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+        with patch("socket.create_connection", side_effect=socket.timeout("timed out")):
+            with pytest.raises(RuntimeError, match="OpenD"):
+                moomoo_order_handler(_make_payload())
+
+    def test_successful_buy_order(self, monkeypatch):
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+        ctx = _mock_ctx(order_id="99")
+        with patch("socket.create_connection"):
+            with patch("handlers.moomoo_handler._get_trade_context", return_value=ctx):
+                result = moomoo_order_handler(_make_payload(action="buy"))
+        assert result["order_id"] == "99"
+        assert result["ret_code"] == futu.RET_OK
+
+    def test_successful_sell_order_uses_sell_side(self, monkeypatch):
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+        ctx = _mock_ctx()
+        with patch("socket.create_connection"):
+            with patch("handlers.moomoo_handler._get_trade_context", return_value=ctx):
+                moomoo_order_handler(_make_payload(action="sell"))
+        call_kwargs = ctx.place_order.call_args.kwargs
+        assert call_kwargs["trd_side"] == futu.TrdSide.SELL
+
+    def test_failed_order_raises_runtime_error(self, monkeypatch):
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+        ctx = MagicMock()
+        ctx.__enter__ = MagicMock(return_value=ctx)
+        ctx.__exit__ = MagicMock(return_value=False)
+        ctx.place_order.return_value = (-1, "APIエラー")
+        with patch("socket.create_connection"):
+            with patch("handlers.moomoo_handler._get_trade_context", return_value=ctx):
+                with pytest.raises(RuntimeError, match="moomoo注文エラー"):
+                    moomoo_order_handler(_make_payload())
+
+    def test_hk_asset_class_uses_hk_context(self, monkeypatch):
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+        ctx = _mock_ctx()
+        with patch("socket.create_connection"):
+            with patch("futu.OpenHKTradeContext", return_value=ctx) as mock_hk:
+                moomoo_order_handler(_make_payload(asset_class="HK", ticker="HK.00700"))
+            mock_hk.assert_called_once()
+
+    def test_real_env_uses_real_trd_env(self, monkeypatch):
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "REAL")
+        ctx = _mock_ctx()
+        with patch("socket.create_connection"):
+            with patch("handlers.moomoo_handler._get_trade_context", return_value=ctx):
+                moomoo_order_handler(_make_payload())
+        call_kwargs = ctx.place_order.call_args.kwargs
+        assert call_kwargs["trd_env"] == futu.TrdEnv.REAL
+
+    def test_order_id_fallback_when_column_missing(self, monkeypatch):
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+        # order_id カラムが存在しない DataFrame を返す
+        mock_data = pd.DataFrame({"other_col": ["value"]})
+        ctx = MagicMock()
+        ctx.__enter__ = MagicMock(return_value=ctx)
+        ctx.__exit__ = MagicMock(return_value=False)
+        ctx.place_order.return_value = (futu.RET_OK, mock_data)
+        with patch("socket.create_connection"):
+            with patch("handlers.moomoo_handler._get_trade_context", return_value=ctx):
+                result = moomoo_order_handler(_make_payload())
+        # フォールバックとして文字列全体が返される
+        assert "order_id" in result

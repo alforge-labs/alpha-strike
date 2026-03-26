@@ -117,3 +117,24 @@ async def test_error_detail_does_not_leak_internals(client, monkeypatch):
 
     assert response.status_code == 502
     assert "internal host detail" not in response.json().get("detail", "")
+
+
+@pytest.mark.anyio
+async def test_moomoo_handler_called_for_moomoo_broker(client):
+    from unittest.mock import patch
+
+    moomoo_payload = {
+        **BASE_PAYLOAD,
+        "broker": "moomoo",
+        "asset_class": "US",
+        "ticker": "US.AAPL",
+        "quantity": 10,
+    }
+    with patch("handlers.moomoo_handler.moomoo_order_handler", return_value={"order_id": "42", "ret_code": 0}) as mock_handler:
+        # moomoo_order_handler を直接パッチ
+        with patch("webhook_server.moomoo_order_handler", return_value={"order_id": "42", "ret_code": 0}):
+            response = await client.post("/webhook", json=moomoo_payload)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["broker"] == "moomoo"
