@@ -26,3 +26,6 @@ htmlcov/
 
 # PM2 ログ
 logs/
+
+# Agent
+.agent/
