@@ -47,7 +47,10 @@ def _to_oanda_instrument(ticker: str, asset_class: str) -> str:
     if asset_class in ("US", "INDEX") and "_" not in ticker:
         return f"{ticker}_USD"
     if asset_class in ("FX", "COMMODITY") and len(ticker) != 6:
-        logger.warning("FX/COMMODITYの ticker が6文字ではありません。変換せずに送信します: %s", ticker)
+        logger.warning(
+            "FX/COMMODITYの ticker が6文字ではありません。変換せずに送信します: %s",
+            ticker,
+        )
     return ticker
 
 
@@ -75,7 +78,9 @@ def oanda_order_handler(payload: WebhookPayload) -> dict:
     if not account_id:
         raise ValueError("環境変数 OANDA_ACCOUNT_ID が設定されていません")
     if oanda_env not in ("PRACTICE", "LIVE"):
-        raise ValueError(f"OANDA_ENV は PRACTICE または LIVE である必要があります: {oanda_env!r}")
+        raise ValueError(
+            f"OANDA_ENV は PRACTICE または LIVE である必要があります: {oanda_env!r}"
+        )
 
     base_url = OANDA_PRACTICE_URL if oanda_env == "PRACTICE" else OANDA_LIVE_URL
     instrument = _to_oanda_instrument(payload.ticker, payload.asset_class)
@@ -96,7 +101,9 @@ def oanda_order_handler(payload: WebhookPayload) -> dict:
     }
 
     url = f"{base_url}/v3/accounts/{account_id}/orders"
-    logger.info("OANDA注文送信: instrument=%s units=%s env=%s", instrument, units, oanda_env)
+    logger.info(
+        "OANDA注文送信: instrument=%s units=%s env=%s", instrument, units, oanda_env
+    )
 
     data = _call_oanda_api(url, body, headers)
     order_id = data.get("orderCreateTransaction", {}).get("id", "unknown")
