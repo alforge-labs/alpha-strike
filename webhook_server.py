@@ -12,6 +12,8 @@ import os
 import socket
 import sys
 from contextlib import asynccontextmanager
+from datetime import datetime
+from time import perf_counter
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request
@@ -20,8 +22,9 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from event_logger import JsonlEventLogger
 from handlers import moomoo_order_handler, oanda_order_handler
-from models import OrderResult, WebhookPayload
+from models import OrderEvent, OrderResult, SignalEvent, WebhookPayload
 
 load_dotenv()
 
@@ -33,6 +36,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address)
+event_logger = JsonlEventLogger()
+
+
+def _generate_id(prefix: str) -> str:
+    """タイムスタンプベースの識別子を生成する。"""
+    return f"{prefix}_{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
 
 
 @asynccontextmanager
@@ -75,6 +84,26 @@ async def receive_webhook(
         logger.warning("不正なパスフレーズでアクセスがありました")
         raise HTTPException(status_code=401, detail="Unauthorized")
 
+    signal_id = payload.signal_id or _generate_id("sig")
+    signal_event = SignalEvent(
+        event_id=_generate_id("evt"),
+        signal_id=signal_id,
+        occurred_at=datetime.now(),
+        broker=payload.broker,
+        asset_class=payload.asset_class,
+        action=payload.action,
+        ticker=payload.ticker,
+        quantity=payload.quantity,
+        strategy_id=payload.strategy_id,
+        strategy_version=payload.strategy_version,
+        snapshot_id=payload.snapshot_id,
+        timeframe=payload.timeframe,
+        alert_timestamp=payload.alert_timestamp,
+        run_mode=payload.run_mode,
+        alert_name=payload.alert_name,
+    )
+    event_logger.append(signal_event)
+
     logger.info(
         "Webhook受信: broker=%s ticker=%s action=%s qty=%s",
         payload.broker,
@@ -83,11 +112,38 @@ async def receive_webhook(
         payload.quantity,
     )
 
+    started_at = perf_counter()
+    internal_order_id = _generate_id("ord")
+
     try:
         if payload.broker == "oanda":
             result = oanda_order_handler(payload)
         else:  # "moomoo" — Literalで保証済み
             result = moomoo_order_handler(payload)
+
+        latency_ms = int((perf_counter() - started_at) * 1000)
+        broker_order_id = (
+            str(result.get("order_id")) if isinstance(result, dict) and result.get("order_id") else None
+        )
+        order_event = OrderEvent(
+            event_id=_generate_id("evt"),
+            signal_id=signal_id,
+            order_id=internal_order_id,
+            occurred_at=datetime.now(),
+            broker=payload.broker,
+            asset_class=payload.asset_class,
+            action=payload.action,
+            ticker=payload.ticker,
+            quantity=payload.quantity,
+            status="accepted",
+            request_latency_ms=latency_ms,
+            broker_order_id=broker_order_id,
+            strategy_id=payload.strategy_id,
+            strategy_version=payload.strategy_version,
+            snapshot_id=payload.snapshot_id,
+            run_mode=payload.run_mode,
+        )
+        event_logger.append(order_event)
 
         logger.info(
             "注文成功: broker=%s ticker=%s action=%s qty=%s",
@@ -101,17 +157,63 @@ async def receive_webhook(
             broker=payload.broker,
             ticker=payload.ticker,
             message=str(result),
+            signal_id=signal_id,
+            order_id=internal_order_id,
+            broker_order_id=broker_order_id,
+            event_id=order_event.event_id,
         )
 
     except HTTPException:
         raise
     except (ValueError, ImportError) as e:
+        latency_ms = int((perf_counter() - started_at) * 1000)
+        event_logger.append(
+            OrderEvent(
+                event_id=_generate_id("evt"),
+                signal_id=signal_id,
+                order_id=internal_order_id,
+                occurred_at=datetime.now(),
+                broker=payload.broker,
+                asset_class=payload.asset_class,
+                action=payload.action,
+                ticker=payload.ticker,
+                quantity=payload.quantity,
+                status="failed",
+                request_latency_ms=latency_ms,
+                strategy_id=payload.strategy_id,
+                strategy_version=payload.strategy_version,
+                snapshot_id=payload.snapshot_id,
+                run_mode=payload.run_mode,
+                error_type=type(e).__name__,
+            )
+        )
         logger.error("設定エラー: %s", e)
         raise HTTPException(
             status_code=500,
             detail="設定エラーが発生しました。管理者にお問い合わせください。",
         ) from e
     except Exception as e:
+        latency_ms = int((perf_counter() - started_at) * 1000)
+        event_logger.append(
+            OrderEvent(
+                event_id=_generate_id("evt"),
+                signal_id=signal_id,
+                order_id=internal_order_id,
+                occurred_at=datetime.now(),
+                broker=payload.broker,
+                asset_class=payload.asset_class,
+                action=payload.action,
+                ticker=payload.ticker,
+                quantity=payload.quantity,
+                status="failed",
+                request_latency_ms=latency_ms,
+                strategy_id=payload.strategy_id,
+                strategy_version=payload.strategy_version,
+                snapshot_id=payload.snapshot_id,
+                run_mode=payload.run_mode,
+                error_type=type(e).__name__,
+            )
+        )
         logger.error(
             "注文失敗: broker=%s ticker=%s error=%s",
             payload.broker,

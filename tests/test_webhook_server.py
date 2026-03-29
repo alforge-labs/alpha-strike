@@ -1,5 +1,7 @@
 """Webhook サーバーのインテグレーションテスト"""
 
+import json
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -89,6 +91,9 @@ async def test_oanda_handler_called_for_oanda_broker(client, monkeypatch):
     data = response.json()
     assert data["status"] == "success"
     assert data["broker"] == "oanda"
+    assert data["signal_id"].startswith("sig_")
+    assert data["order_id"].startswith("ord_")
+    assert data["event_id"].startswith("evt_")
 
 
 @pytest.mark.anyio
@@ -138,6 +143,64 @@ async def test_moomoo_handler_called_for_moomoo_broker(client):
     assert response.status_code == 200
     data = response.json()
     assert data["broker"] == "moomoo"
+
+
+@pytest.mark.anyio
+async def test_payload_accepts_live_tracking_metadata(client, monkeypatch, tmp_path):
+    from unittest.mock import patch
+
+    monkeypatch.setenv("LIVE_EVENTS_PATH", str(tmp_path))
+    monkeypatch.setenv("OANDA_API_KEY", "test-key")
+    monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account")
+    monkeypatch.setenv("OANDA_ENV", "PRACTICE")
+
+    payload = {
+        **BASE_PAYLOAD,
+        "strategy_id": "sma_crossover_v1",
+        "strategy_version": "1.2.0",
+        "snapshot_id": "snap_20260329190300123456",
+        "signal_id": "sig_manual_001",
+        "timeframe": "1h",
+        "run_mode": "live",
+        "alert_name": "SMA Long",
+    }
+
+    with patch("handlers.oanda_handler.requests.post") as mock_post:
+        mock_post.return_value.json.return_value = {"orderCreateTransaction": {"id": "42"}}
+        mock_post.return_value.raise_for_status.return_value = None
+        response = await client.post("/webhook", json=payload)
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["signal_id"] == "sig_manual_001"
+    assert data["broker_order_id"] == "42"
+
+
+@pytest.mark.anyio
+async def test_webhook_writes_signal_and_order_events(client, monkeypatch, tmp_path):
+    from unittest.mock import patch
+
+    monkeypatch.setenv("LIVE_EVENTS_PATH", str(tmp_path))
+    monkeypatch.setenv("OANDA_API_KEY", "test-key")
+    monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account")
+    monkeypatch.setenv("OANDA_ENV", "PRACTICE")
+
+    with patch("handlers.oanda_handler.requests.post") as mock_post:
+        mock_post.return_value.json.return_value = {"orderCreateTransaction": {"id": "42"}}
+        mock_post.return_value.raise_for_status.return_value = None
+        response = await client.post("/webhook", json=BASE_PAYLOAD)
+
+    assert response.status_code == 200
+
+    event_files = list(tmp_path.glob("*.oanda.jsonl"))
+    assert len(event_files) == 1
+    lines = event_files[0].read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 2
+    signal_event = json.loads(lines[0])
+    order_event = json.loads(lines[1])
+    assert signal_event["event_type"] == "signal_received"
+    assert order_event["event_type"] == "order_recorded"
+    assert order_event["status"] == "accepted"
 
 
 # --- /health/ready エンドポイントのテスト ---
