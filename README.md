@@ -36,6 +36,7 @@ cp .env.example .env
 | 変数 | 必須 | 説明 |
 |---|---|---|
 | `WEBHOOK_PASSPHRASE` | 必須 | TradingView アラートの認証パスフレーズ |
+| `LIVE_EVENTS_PATH` | 任意 | `SignalEvent` / `OrderEvent` の JSONL 保存先 |
 | `OANDA_API_KEY` | OANDA使用時 | Personal Access Token |
 | `OANDA_ACCOUNT_ID` | OANDA使用時 | 口座ID |
 | `OANDA_ENV` | OANDA使用時 | `PRACTICE`（デモ）または `LIVE`（本番）|
@@ -44,6 +45,7 @@ cp .env.example .env
 | `MOOMOO_TRD_ENV` | moomoo使用時 | `SIMULATE`（デモ）または `REAL`（本番）|
 
 > **重要**: テスト時は必ず `OANDA_ENV=PRACTICE` / `MOOMOO_TRD_ENV=SIMULATE` を設定してください。
+> live trading analysis を使う場合は `LIVE_EVENTS_PATH` を `alpha-strategies/data/live/events` に向けてください。
 
 ### 3. サーバー起動
 
@@ -117,6 +119,7 @@ Swagger UI: `http://localhost:8080/docs`
 |---|---|
 | [docs/setup.md](docs/setup.md) | 詳細なセットアップ手順 |
 | [docs/tradingview.md](docs/tradingview.md) | TradingView アラート設定ガイド |
+| [docs/webhook-payload-v2.md](docs/webhook-payload-v2.md) | live trading analysis 向け payload 拡張案 |
 | [docs/moomoo_futud.md](docs/moomoo_futud.md) | OpenD セットアップガイド |
 
 ## 開発
