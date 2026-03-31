@@ -27,5 +27,8 @@ htmlcov/
 # PM2 ログ
 logs/
 
+# 取引イベントログ（実取引データを含む）
+data/events/
+
 # Agent
 .agent/
