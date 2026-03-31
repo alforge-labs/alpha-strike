@@ -40,7 +40,7 @@ except ImportError:
 def _check_opend_connection(host: str, port: int) -> None:
     """OpenD への TCP 接続確認。一時障害に対して最大3回リトライする。"""
     with socket.create_connection((host, port), timeout=3):
-        pass
+        pass  # 接続確認のみ。コンテキスト終了時に自動クローズ
 
 
 def _get_trade_context(
@@ -77,7 +77,10 @@ def moomoo_order_handler(payload: WebhookPayload) -> dict:
         )
 
     host = os.getenv("MOOMOO_HOST", "127.0.0.1")
-    port = int(os.getenv("MOOMOO_PORT", "11111"))
+    try:
+        port = int(os.getenv("MOOMOO_PORT", "11111"))
+    except ValueError as e:
+        raise ValueError("MOOMOO_PORT に不正な値が設定されています") from e
     trd_env_str = os.getenv("MOOMOO_TRD_ENV", "SIMULATE").upper()
 
     # TrdEnv マッピング（デフォルトはSIMULATEで安全側）
@@ -151,9 +154,6 @@ def moomoo_order_handler(payload: WebhookPayload) -> dict:
             logger.info("moomoo注文成功: order_id=%s", order_id)
             return {"order_id": order_id, "ret_code": ret_code}
 
-    except (AttributeError, KeyError) as e:
-        logger.error("moomooレスポンスのパース失敗: %s", e)
-        raise RuntimeError(f"moomooレスポンス解析エラー: {e}") from e
     except Exception as e:
         if isinstance(e, (ImportError, ValueError, RuntimeError)):
             raise
@@ -161,6 +161,5 @@ def moomoo_order_handler(payload: WebhookPayload) -> dict:
             "moomoo注文で予期しないエラー: ticker=%s error=%s",
             payload.ticker,
             e,
-            exc_info=True,
         )
         raise RuntimeError(f"moomoo注文失敗: {e}") from e

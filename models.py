@@ -60,8 +60,8 @@ class WebhookPayload(BaseModel):
 
 
 class OrderResult(BaseModel):
-    status: str
-    broker: str
+    status: Literal["success", "error"]
+    broker: Literal["oanda", "moomoo"]
     ticker: str
     message: str
     signal_id: str | None = None
