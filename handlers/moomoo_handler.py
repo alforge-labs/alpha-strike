@@ -148,8 +148,21 @@ def moomoo_order_handler(payload: WebhookPayload) -> dict:
                 logger.warning("order_idのパース失敗: %s。レスポンス全体を使用。", e)
                 order_id = str(data)
 
+            filled_qty = None
+            filled_price = None
+            if hasattr(data, "empty") and not data.empty:
+                if "dealt_qty" in data.columns:
+                    filled_qty = float(data["dealt_qty"].iloc[0])
+                if "dealt_avg_price" in data.columns:
+                    filled_price = float(data["dealt_avg_price"].iloc[0])
+
             logger.info("moomoo注文成功: order_id=%s", order_id)
-            return {"order_id": order_id, "ret_code": ret_code}
+            return {
+                "order_id": order_id,
+                "ret_code": ret_code,
+                "filled_qty": filled_qty,
+                "filled_price": filled_price,
+            }
 
     except (AttributeError, KeyError) as e:
         logger.error("moomooレスポンスのパース失敗: %s", e)

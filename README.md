@@ -36,7 +36,7 @@ cp .env.example .env
 | 変数 | 必須 | 説明 |
 |---|---|---|
 | `WEBHOOK_PASSPHRASE` | 必須 | TradingView アラートの認証パスフレーズ |
-| `LIVE_EVENTS_PATH` | 任意 | `SignalEvent` / `OrderEvent` の JSONL 保存先 |
+| `LIVE_EVENTS_PATH` | 任意 | `SignalEvent` / `OrderEvent` / `FillEvent` の JSONL 保存先 |
 | `OANDA_API_KEY` | OANDA使用時 | Personal Access Token |
 | `OANDA_ACCOUNT_ID` | OANDA使用時 | 口座ID |
 | `OANDA_ENV` | OANDA使用時 | `PRACTICE`（デモ）または `LIVE`（本番）|
@@ -46,6 +46,11 @@ cp .env.example .env
 
 > **重要**: テスト時は必ず `OANDA_ENV=PRACTICE` / `MOOMOO_TRD_ENV=SIMULATE` を設定してください。
 > live trading analysis を使う場合は `LIVE_EVENTS_PATH` を `alpha-strategies/data/live/events` に向けてください。
+> broker の同期レスポンスから約定価格が取れる場合は `FillEvent` も best-effort で保存されます。
+> 現在は broker poller / callback から `POST /events/trade-closed` を呼ぶことで `TradeClosedEvent` を保存できます。
+> moomoo では、同一 strategy / ticker の opposite-side fill を検出した場合、単一 open trade の split exit に加えて、複数 open lot をまたぐ close でも lot ごとの `TradeClosedEvent` を自動生成できます。
+> OANDA でも、同一 strategy / ticker の opposite-side fill を検出した場合、単純な opposite-fill close に加えて、複数 open lot をまたぐ close を lot ごとに event 化します。
+> opposite fill の数量が既存ポジションを上回る reversal では、クローズ分は `TradeClosedEvent` を出し、残数量は新しい `trade_id` を持つ `FillEvent` として残します。
 
 ### 3. サーバー起動
 
@@ -85,6 +90,36 @@ Swagger UI: `http://localhost:8080/docs`
 | `action` | `"buy"` \| `"sell"` | 売買方向 |
 | `ticker` | string | 銘柄コード |
 | `quantity` | number | 注文数量（0より大きい値）|
+
+## Trade Closed Event Ingestion
+
+broker 側の照会や callback からクローズ情報を取り込むために、認証付き endpoint を用意しています。
+
+`POST /events/trade-closed`
+
+```json
+{
+  "passphrase": "your-secret-passphrase",
+  "signal_id": "sig_usdjpy_20260330101500",
+  "trade_id": "trd_20260330101502123456",
+  "closed_at": "2026-03-31T11:05:00+09:00",
+  "broker": "oanda",
+  "asset_class": "FX",
+  "action": "buy",
+  "ticker": "USDJPY",
+  "quantity": 1000,
+  "entry_price": 149.235,
+  "exit_price": 149.910,
+  "gross_pnl": 675.0,
+  "net_pnl": 655.0,
+  "strategy_id": "sma_crossover_v1",
+  "strategy_version": "1.2.0",
+  "snapshot_id": "snap_20260329190300123456",
+  "run_mode": "live",
+  "commission": 20.0,
+  "exit_reason": "signal_exit"
+}
+```
 
 ### OANDA の asset_class と ticker 変換
 

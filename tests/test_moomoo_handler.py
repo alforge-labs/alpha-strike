@@ -23,11 +23,18 @@ def _make_payload(**kwargs) -> WebhookPayload:
     return WebhookPayload(**(defaults | kwargs))
 
 
-def _mock_ctx(ret_code=None, order_id="12345") -> MagicMock:
+def _mock_ctx(
+    ret_code=None, order_id="12345", dealt_qty: float | None = None, dealt_avg_price: float | None = None
+) -> MagicMock:
     """place_order が成功を返す mock コンテキストを生成する。"""
     if ret_code is None:
         ret_code = futu.RET_OK
-    mock_data = pd.DataFrame({"order_id": [order_id]})
+    data = {"order_id": [order_id]}
+    if dealt_qty is not None:
+        data["dealt_qty"] = [dealt_qty]
+    if dealt_avg_price is not None:
+        data["dealt_avg_price"] = [dealt_avg_price]
+    mock_data = pd.DataFrame(data)
     ctx = MagicMock()
     ctx.__enter__ = MagicMock(return_value=ctx)
     ctx.__exit__ = MagicMock(return_value=False)
@@ -88,12 +95,14 @@ class TestMoomooOrderHandler:
 
     def test_successful_buy_order(self, monkeypatch):
         monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
-        ctx = _mock_ctx(order_id="99")
+        ctx = _mock_ctx(order_id="99", dealt_qty=10, dealt_avg_price=188.5)
         with patch("socket.create_connection"):
             with patch("handlers.moomoo_handler._get_trade_context", return_value=ctx):
                 result = moomoo_order_handler(_make_payload(action="buy"))
         assert result["order_id"] == "99"
         assert result["ret_code"] == futu.RET_OK
+        assert result["filled_qty"] == 10.0
+        assert result["filled_price"] == 188.5
 
     def test_successful_sell_order_uses_sell_side(self, monkeypatch):
         monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
