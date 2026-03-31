@@ -11,6 +11,7 @@ import logging
 import os
 import socket
 import sys
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
 from time import perf_counter
@@ -45,7 +46,7 @@ def _generate_id(prefix: str) -> str:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """起動時に必須環境変数を検証する。"""
     passphrase = os.getenv("WEBHOOK_PASSPHRASE", "")
     if not passphrase:
@@ -122,9 +123,8 @@ async def receive_webhook(
             result = moomoo_order_handler(payload)
 
         latency_ms = int((perf_counter() - started_at) * 1000)
-        broker_order_id = (
-            str(result.get("order_id")) if isinstance(result, dict) and result.get("order_id") else None
-        )
+        _oid = result.get("order_id") if isinstance(result, dict) else None
+        broker_order_id = str(_oid) if _oid is not None else None
         order_event = OrderEvent(
             event_id=_generate_id("evt"),
             signal_id=signal_id,
@@ -260,14 +260,20 @@ async def health_ready() -> dict:
 
     # moomoo チェック: OpenD への TCP 接続確認（詳細は内部ログのみ）
     moomoo_host = os.getenv("MOOMOO_HOST", "127.0.0.1")
-    moomoo_port = int(os.getenv("MOOMOO_PORT", "11111"))
     try:
-        with socket.create_connection((moomoo_host, moomoo_port), timeout=3):
-            pass
-        checks["moomoo"] = {"status": "ok"}
-    except (OSError, socket.timeout) as e:
-        logger.warning("OpenD への接続確認に失敗: %s", e)
-        checks["moomoo"] = {"status": "error", "detail": "OpenD に接続できません"}
+        moomoo_port = int(os.getenv("MOOMOO_PORT", "11111"))
+    except ValueError:
+        checks["moomoo"] = {"status": "error", "detail": "MOOMOO_PORT が不正な値です"}
+        moomoo_port = None  # type: ignore[assignment]
+
+    if moomoo_port is not None:
+        try:
+            with socket.create_connection((moomoo_host, moomoo_port), timeout=3):
+                pass  # 接続確認のみ。コンテキスト終了時に自動クローズ
+            checks["moomoo"] = {"status": "ok"}
+        except (OSError, socket.timeout) as e:
+            logger.warning("OpenD への接続確認に失敗: %s", e)
+            checks["moomoo"] = {"status": "error", "detail": "OpenD に接続できません"}
 
     all_ok = all(c["status"] == "ok" for c in checks.values())
     status = "ready" if all_ok else "degraded"
