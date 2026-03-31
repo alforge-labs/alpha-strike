@@ -46,6 +46,15 @@ MOOMOO_TRD_ENV=SIMULATE   # テスト時は必ずSIMULATE
 
 > **重要**: `.env` は絶対にGitにコミットしないでください。`.gitignore` で除外済みです。
 
+## Docker でのデプロイ
+
+> **重要:** `data/events/` ディレクトリは Docker コンテナ内の `appuser`（UID 1001）が書き込む必要があります。
+> 初回デプロイ前に以下を実行してください:
+> ```bash
+> mkdir -p ./data/events
+> chown -R 1001:1001 ./data/events
+> ```
+
 ## サーバー起動
 
 ```bash
