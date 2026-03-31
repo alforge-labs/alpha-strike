@@ -63,7 +63,7 @@ def oanda_order_handler(payload: WebhookPayload) -> dict:
         OANDA_ENV: PRACTICE（デモ）または LIVE（本番）。デフォルト: PRACTICE
 
     Returns:
-        {"order_id": str, "instrument": str}
+        {"order_id": str, "instrument": str, ...}
 
     Raises:
         ValueError: 環境変数が不足または不正な場合
@@ -107,6 +107,18 @@ def oanda_order_handler(payload: WebhookPayload) -> dict:
 
     data = _call_oanda_api(url, body, headers)
     order_id = data.get("orderCreateTransaction", {}).get("id", "unknown")
+    fill_tx = data.get("orderFillTransaction", {})
+    filled_qty = abs(float(fill_tx["units"])) if fill_tx.get("units") is not None else None
+    filled_price = (
+        float(fill_tx["price"]) if fill_tx.get("price") is not None else None
+    )
+    fill_id = str(fill_tx["id"]) if fill_tx.get("id") is not None else None
 
     logger.info("OANDA注文成功: order_id=%s instrument=%s", order_id, instrument)
-    return {"order_id": order_id, "instrument": instrument}
+    return {
+        "order_id": order_id,
+        "instrument": instrument,
+        "fill_id": fill_id,
+        "filled_qty": filled_qty,
+        "filled_price": filled_price,
+    }

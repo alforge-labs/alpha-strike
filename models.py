@@ -70,6 +70,12 @@ class OrderResult(BaseModel):
     event_id: str | None = None
 
 
+class EventIngestResult(BaseModel):
+    status: str
+    event_id: str
+    message: str
+
+
 class SignalEvent(BaseModel):
     event_type: Literal["signal_received"] = "signal_received"
     event_id: str
@@ -108,3 +114,73 @@ class OrderEvent(BaseModel):
     snapshot_id: str | None = None
     run_mode: Literal["paper", "live"] = "live"
     error_type: str | None = None
+
+
+class FillEvent(BaseModel):
+    event_type: Literal["fill_received"] = "fill_received"
+    event_id: str
+    signal_id: str
+    order_id: str
+    fill_id: str
+    occurred_at: datetime
+    broker: Literal["oanda", "moomoo"]
+    asset_class: Literal["FX", "COMMODITY", "US", "HK", "INDEX"]
+    action: Literal["buy", "sell"]
+    ticker: str
+    quantity: float
+    filled_qty: float
+    filled_price: float
+    broker_order_id: str | None = None
+    trade_id: str | None = None
+    strategy_id: str | None = None
+    strategy_version: str | None = None
+    snapshot_id: str | None = None
+    run_mode: Literal["paper", "live"] = "live"
+    commission: float | None = None
+    slippage_bps: float | None = None
+
+
+class TradeClosedEvent(BaseModel):
+    event_type: Literal["trade_closed"] = "trade_closed"
+    event_id: str
+    signal_id: str
+    trade_id: str
+    occurred_at: datetime
+    closed_at: datetime
+    broker: Literal["oanda", "moomoo"]
+    asset_class: Literal["FX", "COMMODITY", "US", "HK", "INDEX"]
+    action: Literal["buy", "sell"]
+    ticker: str
+    quantity: float
+    entry_price: float
+    exit_price: float
+    gross_pnl: float
+    net_pnl: float
+    strategy_id: str | None = None
+    strategy_version: str | None = None
+    snapshot_id: str | None = None
+    run_mode: Literal["paper", "live"] = "live"
+    commission: float | None = None
+    exit_reason: str | None = None
+
+
+class TradeClosedPayload(BaseModel):
+    passphrase: str = Field(repr=False)
+    signal_id: str
+    trade_id: str
+    closed_at: datetime
+    broker: Literal["oanda", "moomoo"]
+    asset_class: Literal["FX", "COMMODITY", "US", "HK", "INDEX"]
+    action: Literal["buy", "sell"]
+    ticker: str
+    quantity: float = Field(gt=0)
+    entry_price: float = Field(gt=0)
+    exit_price: float = Field(gt=0)
+    gross_pnl: float
+    net_pnl: float
+    strategy_id: str | None = None
+    strategy_version: str | None = None
+    snapshot_id: str | None = None
+    run_mode: Literal["paper", "live"] = "live"
+    commission: float | None = None
+    exit_reason: str | None = None

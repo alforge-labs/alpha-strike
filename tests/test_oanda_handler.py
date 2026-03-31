@@ -81,7 +81,8 @@ class TestOandaOrderHandler:
 
         mock_response = MagicMock()
         mock_response.json.return_value = {
-            "orderCreateTransaction": {"id": "42"}
+            "orderCreateTransaction": {"id": "42"},
+            "orderFillTransaction": {"id": "314", "units": "1000", "price": "149.235"},
         }
         mock_response.raise_for_status = MagicMock()
 
@@ -90,6 +91,9 @@ class TestOandaOrderHandler:
 
         assert result["order_id"] == "42"
         assert result["instrument"] == "USD_JPY"
+        assert result["fill_id"] == "314"
+        assert result["filled_qty"] == 1000.0
+        assert result["filled_price"] == 149.235
         call_kwargs = mock_post.call_args
         assert call_kwargs.kwargs["json"]["order"]["units"] == "1000.0"
 
