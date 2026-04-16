@@ -157,13 +157,36 @@ broker 側の照会や callback からクローズ情報を取り込むために
 | [docs/webhook-payload-v2.md](docs/webhook-payload-v2.md) | live trading analysis 向け payload 拡張案 |
 | [docs/moomoo_futud.md](docs/moomoo_futud.md) | OpenD セットアップガイド |
 
+## コード構成
+
+<!-- AUTO-GENERATED -->
+```
+alpha-strike/
+├── webhook_server.py       # FastAPI エントリーポイント（薄い HTTP レイヤー）
+├── models.py               # Pydantic データモデル（WebhookPayload, OrderResult 等）
+├── event_logger.py         # JSONL イベントログ
+├── handlers/               # ブローカーハンドラー（OCP/DIP）
+│   ├── base.py             # BrokerHandler Protocol（抽象インターフェース）
+│   ├── oanda_handler.py    # OandaHandler — OANDA REST API v20
+│   └── moomoo_handler.py   # MoomooHandler — moomoo/Futu OpenAPI
+└── services/               # ビジネスロジックサービス（SRP）
+    ├── order_service.py    # OrderRouter — ブローカーへのルーティング
+    └── fill_service.py     # FillEventService — 約定・損益イベント生成
+```
+
+新しいブローカーを追加する場合は `handlers/` に `XxxHandler` を実装し、`services/order_service.py` の `build_default_router()` へ登録するだけで、`webhook_server.py` の変更は不要です。
+<!-- /AUTO-GENERATED -->
+
 ## 開発
 
 ```bash
 # テスト実行
 uv run pytest
 
-# 型チェック・Lint（ruff が設定されている場合）
+# カバレッジ付きテスト
+uv run pytest --cov
+
+# Lint
 uv run ruff check .
 ```
 

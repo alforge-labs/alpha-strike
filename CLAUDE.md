@@ -23,17 +23,23 @@ uv run ruff check .
 
 ## アーキテクチャ
 
-TradingView → `POST /webhook` → `webhook_server.py` → ブローカーハンドラー → 証券会社 API
+TradingView → `POST /webhook` → `webhook_server.py` → `OrderRouter` → `BrokerHandler` → 証券会社 API
 
-**エントリーポイント**: `webhook_server.py`（FastAPI）
+**エントリーポイント**: `webhook_server.py`（FastAPI・薄い HTTP レイヤー）
 
 **ブローカーハンドラー** (`handlers/`):
-- `oanda_handler.py` — OANDA REST API v20（`https://api-fxpractice.oanda.com` / `https://api-fxtrade.oanda.com`）
-- `moomoo_handler.py` — moomoo/Futu OpenAPI（OpenD ローカルゲートウェイ経由）
+- `base.py` — `BrokerHandler` Protocol（DIP 用抽象インターフェース）
+- `oanda_handler.py` — `OandaHandler` — OANDA REST API v20（`https://api-fxpractice.oanda.com` / `https://api-fxtrade.oanda.com`）
+- `moomoo_handler.py` — `MoomooHandler` — moomoo/Futu OpenAPI（OpenD ローカルゲートウェイ経由）
+
+**サービス** (`services/`):
+- `order_service.py` — `OrderRouter`（Strategy パターン）: ブローカー名で対応ハンドラーへ委譲。`build_default_router()` で初期化。
+- `fill_service.py` — `FillEventService`（SRP）: `FillEvent` 構築・FIFO 配分・`TradeClosedEvent` 生成。
 
 **データモデル** (`models.py`):
 - `WebhookPayload` — リクエストの入力スキーマ（`broker: Literal["oanda", "moomoo"]`）
 - `OrderResult` — レスポンスの出力スキーマ
+- `FillEvent`, `TradeClosedEvent`, `OrderEvent`, `SignalEvent` — イベントログ用モデル
 
 ## 重要な実装詳細
 

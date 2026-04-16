@@ -2,7 +2,7 @@
 
 ## 前提条件
 
-- Python 3.11+
+- Python 3.14+
 - [uv](https://docs.astral.sh/uv/) インストール済み
 
 ## uv のインストール
