@@ -54,71 +54,69 @@ def _to_oanda_instrument(ticker: str, asset_class: str) -> str:
     return ticker
 
 
-def oanda_order_handler(payload: WebhookPayload) -> dict:
-    """OANDA証券に成行注文を送信する。
+class OandaHandler:
+    """OANDA証券への注文を実行するハンドラー。"""
 
-    環境変数:
-        OANDA_API_KEY: Personal Access Token
-        OANDA_ACCOUNT_ID: 口座ID
-        OANDA_ENV: PRACTICE（デモ）または LIVE（本番）。デフォルト: PRACTICE
+    def execute(self, payload: WebhookPayload) -> dict:
+        """OANDA証券に成行注文を送信する。
 
-    Returns:
-        {"order_id": str, "instrument": str, ...}
+        Returns:
+            {"order_id": str, "instrument": str, ...}
 
-    Raises:
-        ValueError: 環境変数が不足または不正な場合
-        requests.RequestException: API呼び出しに失敗した場合
-    """
-    api_key = os.getenv("OANDA_API_KEY", "")
-    account_id = os.getenv("OANDA_ACCOUNT_ID", "")
-    oanda_env = os.getenv("OANDA_ENV", "PRACTICE").upper()
+        Raises:
+            ValueError: 環境変数が不足または不正な場合
+            requests.RequestException: API呼び出しに失敗した場合
+        """
+        api_key = os.getenv("OANDA_API_KEY", "")
+        account_id = os.getenv("OANDA_ACCOUNT_ID", "")
+        oanda_env = os.getenv("OANDA_ENV", "PRACTICE").upper()
 
-    if not api_key:
-        raise ValueError("環境変数 OANDA_API_KEY が設定されていません")
-    if not account_id:
-        raise ValueError("環境変数 OANDA_ACCOUNT_ID が設定されていません")
-    if oanda_env not in ("PRACTICE", "LIVE"):
-        raise ValueError(
-            f"OANDA_ENV は PRACTICE または LIVE である必要があります: {oanda_env!r}"
+        if not api_key:
+            raise ValueError("環境変数 OANDA_API_KEY が設定されていません")
+        if not account_id:
+            raise ValueError("環境変数 OANDA_ACCOUNT_ID が設定されていません")
+        if oanda_env not in ("PRACTICE", "LIVE"):
+            raise ValueError(
+                f"OANDA_ENV は PRACTICE または LIVE である必要があります: {oanda_env!r}"
+            )
+
+        base_url = OANDA_PRACTICE_URL if oanda_env == "PRACTICE" else OANDA_LIVE_URL
+        instrument = _to_oanda_instrument(payload.ticker, payload.asset_class)
+
+        # SELL は負の units で表現する
+        units = payload.quantity if payload.action == "buy" else -payload.quantity
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        body = {
+            "order": {
+                "type": "MARKET",
+                "instrument": instrument,
+                "units": str(units),
+            }
+        }
+
+        url = f"{base_url}/v3/accounts/{account_id}/orders"
+        logger.info(
+            "OANDA注文送信: instrument=%s units=%s env=%s", instrument, units, oanda_env
         )
 
-    base_url = OANDA_PRACTICE_URL if oanda_env == "PRACTICE" else OANDA_LIVE_URL
-    instrument = _to_oanda_instrument(payload.ticker, payload.asset_class)
+        data = _call_oanda_api(url, body, headers)
+        order_id = data.get("orderCreateTransaction", {}).get("id", "unknown")
+        fill_tx = data.get("orderFillTransaction", {})
+        filled_qty = abs(float(fill_tx["units"])) if fill_tx.get("units") is not None else None
+        filled_price = (
+            float(fill_tx["price"]) if fill_tx.get("price") is not None else None
+        )
+        fill_id = str(fill_tx["id"]) if fill_tx.get("id") is not None else None
 
-    # SELL は負の units で表現する
-    units = payload.quantity if payload.action == "buy" else -payload.quantity
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    body = {
-        "order": {
-            "type": "MARKET",
+        logger.info("OANDA注文成功: order_id=%s instrument=%s", order_id, instrument)
+        return {
+            "order_id": order_id,
             "instrument": instrument,
-            "units": str(units),
+            "fill_id": fill_id,
+            "filled_qty": filled_qty,
+            "filled_price": filled_price,
         }
-    }
-
-    url = f"{base_url}/v3/accounts/{account_id}/orders"
-    logger.info(
-        "OANDA注文送信: instrument=%s units=%s env=%s", instrument, units, oanda_env
-    )
-
-    data = _call_oanda_api(url, body, headers)
-    order_id = data.get("orderCreateTransaction", {}).get("id", "unknown")
-    fill_tx = data.get("orderFillTransaction", {})
-    filled_qty = abs(float(fill_tx["units"])) if fill_tx.get("units") is not None else None
-    filled_price = (
-        float(fill_tx["price"]) if fill_tx.get("price") is not None else None
-    )
-    fill_id = str(fill_tx["id"]) if fill_tx.get("id") is not None else None
-
-    logger.info("OANDA注文成功: order_id=%s instrument=%s", order_id, instrument)
-    return {
-        "order_id": order_id,
-        "instrument": instrument,
-        "fill_id": fill_id,
-        "filled_qty": filled_qty,
-        "filled_price": filled_price,
-    }

@@ -4,7 +4,7 @@ import pytest
 import requests
 from unittest.mock import MagicMock, patch
 
-from handlers.oanda_handler import _call_oanda_api, _to_oanda_instrument, oanda_order_handler
+from handlers.oanda_handler import _call_oanda_api, _to_oanda_instrument, OandaHandler
 from models import WebhookPayload
 
 
@@ -59,20 +59,20 @@ class TestOandaOrderHandler:
         monkeypatch.delenv("OANDA_API_KEY", raising=False)
         monkeypatch.setenv("OANDA_ACCOUNT_ID", "123")
         with pytest.raises(ValueError, match="OANDA_API_KEY"):
-            oanda_order_handler(_make_payload())
+            OandaHandler().execute(_make_payload())
 
     def test_missing_account_id_raises_value_error(self, monkeypatch):
         monkeypatch.setenv("OANDA_API_KEY", "key")
         monkeypatch.delenv("OANDA_ACCOUNT_ID", raising=False)
         with pytest.raises(ValueError, match="OANDA_ACCOUNT_ID"):
-            oanda_order_handler(_make_payload())
+            OandaHandler().execute(_make_payload())
 
     def test_invalid_env_raises_value_error(self, monkeypatch):
         monkeypatch.setenv("OANDA_API_KEY", "key")
         monkeypatch.setenv("OANDA_ACCOUNT_ID", "123")
         monkeypatch.setenv("OANDA_ENV", "INVALID")
         with pytest.raises(ValueError, match="PRACTICE または LIVE"):
-            oanda_order_handler(_make_payload())
+            OandaHandler().execute(_make_payload())
 
     def test_buy_order_success(self, monkeypatch):
         monkeypatch.setenv("OANDA_API_KEY", "key")
@@ -87,7 +87,7 @@ class TestOandaOrderHandler:
         mock_response.raise_for_status = MagicMock()
 
         with patch("handlers.oanda_handler.requests.post", return_value=mock_response) as mock_post:
-            result = oanda_order_handler(_make_payload(action="buy", quantity=1000.0))
+            result = OandaHandler().execute(_make_payload(action="buy", quantity=1000.0))
 
         assert result["order_id"] == "42"
         assert result["instrument"] == "USD_JPY"
@@ -107,7 +107,7 @@ class TestOandaOrderHandler:
         mock_response.raise_for_status = MagicMock()
 
         with patch("handlers.oanda_handler.requests.post", return_value=mock_response) as mock_post:
-            oanda_order_handler(_make_payload(action="sell", quantity=500.0))
+            OandaHandler().execute(_make_payload(action="sell", quantity=500.0))
 
         call_kwargs = mock_post.call_args
         assert call_kwargs.kwargs["json"]["order"]["units"] == "-500.0"
@@ -122,7 +122,7 @@ class TestOandaOrderHandler:
         mock_response.raise_for_status = MagicMock()
 
         with patch("handlers.oanda_handler.requests.post", return_value=mock_response) as mock_post:
-            oanda_order_handler(_make_payload())
+            OandaHandler().execute(_make_payload())
 
         url = mock_post.call_args.args[0]
         assert "fxpractice" in url
