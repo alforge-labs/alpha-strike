@@ -5,6 +5,9 @@ import json
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from event_logger import JsonlEventLogger
+from services.fill_service import FillEventService
+from services.order_service import build_default_router
 from webhook_server import app
 
 
@@ -16,6 +19,9 @@ def anyio_backend():
 @pytest.fixture
 async def client(monkeypatch):
     monkeypatch.setenv("WEBHOOK_PASSPHRASE", "test-secret")
+    # lifespan を経由せず直接 app.state を初期化する
+    app.state.order_router = build_default_router()
+    app.state.fill_service = FillEventService(JsonlEventLogger())
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
 
@@ -157,10 +163,8 @@ async def test_moomoo_handler_called_for_moomoo_broker(client):
         "ticker": "US.AAPL",
         "quantity": 10,
     }
-    with patch("handlers.moomoo_handler.moomoo_order_handler", return_value={"order_id": "42", "ret_code": 0}):
-        # moomoo_order_handler を直接パッチ
-        with patch("webhook_server.moomoo_order_handler", return_value={"order_id": "42", "ret_code": 0}):
-            response = await client.post("/webhook", json=moomoo_payload)
+    with patch("handlers.moomoo_handler.MoomooHandler.execute", return_value={"order_id": "42", "ret_code": 0}):
+        response = await client.post("/webhook", json=moomoo_payload)
 
     assert response.status_code == 200
     data = response.json()
@@ -289,7 +293,7 @@ async def test_moomoo_opposite_fill_emits_trade_closed(client, monkeypatch, tmp_
         {"order_id": "43", "ret_code": 0, "fill_id": "fill_sell_001", "filled_qty": 10, "filled_price": 110.0},
     ]
 
-    with patch("webhook_server.moomoo_order_handler", side_effect=side_effect):
+    with patch("handlers.moomoo_handler.MoomooHandler.execute", side_effect=side_effect):
         buy_response = await client.post("/webhook", json=buy_payload)
         sell_response = await client.post("/webhook", json=sell_payload)
 
@@ -336,7 +340,7 @@ async def test_oanda_opposite_fill_emits_trade_closed(client, monkeypatch, tmp_p
         {"order_id": "43", "fill_id": "fill_sell_001", "filled_qty": 1000, "filled_price": 149.8},
     ]
 
-    with patch("webhook_server.oanda_order_handler", side_effect=side_effect):
+    with patch("handlers.oanda_handler.OandaHandler.execute", side_effect=side_effect):
         limiter._storage.reset()
         buy_response = await client.post("/webhook", json=buy_payload)
         limiter._storage.reset()
@@ -396,7 +400,7 @@ async def test_moomoo_split_exit_emits_trade_closed_after_final_fill(client, mon
         {"order_id": "44", "ret_code": 0, "fill_id": "fill_sell_012", "filled_qty": 6, "filled_price": 110.0},
     ]
 
-    with patch("webhook_server.moomoo_order_handler", side_effect=side_effect):
+    with patch("handlers.moomoo_handler.MoomooHandler.execute", side_effect=side_effect):
         buy_response = await client.post("/webhook", json=buy_payload)
         partial_response = await client.post("/webhook", json=partial_sell_payload)
         final_response = await client.post("/webhook", json=final_sell_payload)
@@ -459,7 +463,7 @@ async def test_moomoo_multi_open_lots_exit_emits_trade_closed_for_each_lot(clien
         {"order_id": "53", "ret_code": 0, "fill_id": "fill_sell_103", "filled_qty": 10, "filled_price": 110.0},
     ]
 
-    with patch("webhook_server.moomoo_order_handler", side_effect=side_effect):
+    with patch("handlers.moomoo_handler.MoomooHandler.execute", side_effect=side_effect):
         buy_one_response = await client.post("/webhook", json=buy_one_payload)
         buy_two_response = await client.post("/webhook", json=buy_two_payload)
         sell_response = await client.post("/webhook", json=sell_payload)
@@ -525,7 +529,7 @@ async def test_moomoo_reversal_exit_keeps_residual_fill_as_new_trade(client, mon
         {"order_id": "62", "ret_code": 0, "fill_id": "fill_sell_202", "filled_qty": 15, "filled_price": 110.0},
     ]
 
-    with patch("webhook_server.moomoo_order_handler", side_effect=side_effect):
+    with patch("handlers.moomoo_handler.MoomooHandler.execute", side_effect=side_effect):
         buy_response = await client.post("/webhook", json=buy_payload)
         sell_response = await client.post("/webhook", json=sell_payload)
 
