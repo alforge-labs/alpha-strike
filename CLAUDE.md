@@ -25,7 +25,9 @@ uv run ruff check .
 
 TradingView → `POST /webhook` → `webhook_server.py` → `OrderRouter` → `BrokerHandler` → 証券会社 API
 
-**エントリーポイント**: `webhook_server.py`（FastAPI・薄い HTTP レイヤー）
+**エントリーポイント**:
+- `webhook_server.py` — FastAPI アプリ定義（サーバー本体）
+- `main.py` — PyInstaller バイナリ用ラッパー（uvicorn.run を直接呼び出す）
 
 **ブローカーハンドラー** (`handlers/`):
 - `base.py` — `BrokerHandler` Protocol（DIP 用抽象インターフェース）
