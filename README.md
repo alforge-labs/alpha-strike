@@ -223,7 +223,7 @@ Python 環境がない場合は [Releases](https://github.com/ysakae/alpha-strik
 
 ## 要件
 
-- Python 3.14+
+- Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
 - OANDA の Practice/Live 口座（OANDA使用時）
 - moomoo の口座 + OpenD（moomoo使用時）

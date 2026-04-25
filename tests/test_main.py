@@ -1,7 +1,9 @@
 """main.py のエントリポイントテスト"""
 import runpy
 from pathlib import Path
-from unittest.mock import ANY, patch
+from unittest.mock import patch
+
+from webhook_server import app as webhook_app
 
 ROOT = Path(__file__).parent.parent
 
@@ -22,7 +24,7 @@ def test_main_calls_uvicorn_run_with_correct_args():
     with patch("uvicorn.run") as mock_run:
         runpy.run_path(str(ROOT / "main.py"), run_name="__main__")
     mock_run.assert_called_once_with(
-        ANY,
+        webhook_app,
         host="0.0.0.0",
         port=8080,
         reload=False,
