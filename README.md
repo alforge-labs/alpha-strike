@@ -190,9 +190,40 @@ uv run pytest --cov
 uv run ruff check .
 ```
 
+## バイナリ配布版（Python 不要）
+
+Python 環境がない場合は [Releases](https://github.com/ysakae/alpha-strike/releases) からビルド済みバイナリをダウンロードできます。
+
+### 使い方
+
+1. OS に合ったバイナリをダウンロードする
+   - macOS (Apple Silicon): `alpha-strike-macos-arm64`
+   - Windows: `alpha-strike-windows-x86_64.exe`
+   - Linux: `alpha-strike-linux-x86_64`
+
+2. `.env.example` をコピーして `.env` を作成し、認証情報を設定する
+
+   ```bash
+   cp .env.example .env
+   # .env を編集して WEBHOOK_PASSPHRASE 等を設定する
+   ```
+
+3. バイナリを実行する
+
+   ```bash
+   # macOS / Linux
+   chmod +x alpha-strike-macos-arm64
+   ./alpha-strike-macos-arm64
+
+   # Windows
+   alpha-strike-windows-x86_64.exe
+   ```
+
+4. `http://localhost:8080/webhook` に TradingView アラートを送信する
+
 ## 要件
 
-- Python 3.14+
+- Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
 - OANDA の Practice/Live 口座（OANDA使用時）
 - moomoo の口座 + OpenD（moomoo使用時）
