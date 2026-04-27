@@ -52,10 +52,39 @@ cp .env.example .env
 > OANDA でも、同一 strategy / ticker の opposite-side fill を検出した場合、単純な opposite-fill close に加えて、複数 open lot をまたぐ close を lot ごとに event 化します。
 > opposite fill の数量が既存ポジションを上回る reversal では、クローズ分は `TradeClosedEvent` を出し、残数量は新しい `trade_id` を持つ `FillEvent` として残します。
 
+### 2b. 開発者向け: 1Password CLI を使う場合
+
+`.env` ファイルを作成せずに 1Password から環境変数を直接注入できます。
+
+```bash
+# 1Password CLI のインストール（macOS）
+brew install 1password-cli
+
+# 1Password にサインイン（初回のみ）
+op signin
+
+# 1Password アプリで Vault「AlphaTrade」にアイテム「alpha-strike」を作成し、
+# WEBHOOK_PASSPHRASE / OANDA_API_KEY 等のフィールドを登録する
+
+# op run 経由でサーバーを起動（.env ファイル不要）
+make run
+# または
+make dev   # ホットリロード付き
+```
+
+VPS でのセキュリティ強化（`op` を使わない場合）:
+
+```bash
+chmod 600 .env
+```
+
 ### 3. サーバー起動
 
 ```bash
-uv run uvicorn webhook_server:app --host 0.0.0.0 --port 8080 --reload
+# エンドユーザー向け（.env ファイルを使用）
+uv run python main.py
+# または
+make run-dotenv
 ```
 
 ### 4. 動作確認

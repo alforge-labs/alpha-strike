@@ -56,15 +56,26 @@ def _verify_passphrase(passphrase: str) -> None:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
 
+_REQUIRED_ENV_VARS = ["WEBHOOK_PASSPHRASE"]
+_WARN_IF_UNSET_ENV_VARS = ["OANDA_API_KEY", "OANDA_ACCOUNT_ID"]
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """起動時に必須環境変数を検証し、サービスを初期化する。"""
-    passphrase = os.getenv("WEBHOOK_PASSPHRASE", "")
-    if not passphrase:
-        logger.critical(
-            "WEBHOOK_PASSPHRASE が設定されていません。サーバーを起動できません。"
-        )
+    missing = [v for v in _REQUIRED_ENV_VARS if not os.getenv(v)]
+    if missing:
+        for var in missing:
+            logger.critical(f"{var} が設定されていません。サーバーを起動できません。")
         sys.exit(1)
+
+    unset = [v for v in _WARN_IF_UNSET_ENV_VARS if not os.getenv(v)]
+    if unset:
+        logger.warning(
+            "以下の環境変数が未設定です（該当ブローカー使用時に失敗します）: %s",
+            ", ".join(unset),
+        )
+
     app.state.order_router = build_default_router()
     app.state.fill_service = FillEventService(event_logger)
     logger.info("Alpha-Strike Webhook サーバー起動完了")
