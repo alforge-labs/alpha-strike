@@ -256,3 +256,14 @@ Python 環境がない場合は [Releases](https://github.com/ysakae/alpha-strik
 - [uv](https://docs.astral.sh/uv/)
 - OANDA の Practice/Live 口座（OANDA使用時）
 - moomoo の口座 + OpenD（moomoo使用時）
+
+## ライセンス
+
+Copyright (c) 2026 AlForge Labs. All Rights Reserved.
+
+本ソフトウェアはプロプライエタリ（クローズドソース）であり、無断での複製・改変・配布・利用を一切禁止します。
+完全な利用規約はエンドユーザー使用許諾契約（EULA）を参照してください。
+
+- [LICENSE.md](LICENSE.md) — 著作権表示の概要
+- [EULA.md](EULA.md) — 使用許諾契約の完全な条文（リバースエンジニアリング禁止・金融責任免責を含む）
+- オンライン版: https://alforgelabs.com/eula
