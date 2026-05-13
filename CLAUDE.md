@@ -1,6 +1,6 @@
-# CLAUDE.md
+# alpha-strike — Claude Code ガイド
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+> 親 `alpha-trade/CLAUDE.md` の 9-rule template・プロジェクト固有ガイド・ワークツリー / GitHub Flow / TDD / `uv` 等のルールに従うこと。本ファイルには alpha-strike 固有の事項のみ記載する。
 
 ## コマンド
 
