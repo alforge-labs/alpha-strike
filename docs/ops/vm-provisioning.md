@@ -246,14 +246,30 @@ sudo systemctl restart ssh
 
 > **重要**: Cloudflare Access SSH 経由に切り替えた後も、内部の sshd は localhost:22 で待ち受け続ける必要がある（cloudflared が localhost:22 にプロキシする）。sshd の停止はしない。
 
-### 5-6. iptables 確認（OCI Ubuntu イメージ固有）
+### 5-6. iptables 確認（OCI Ubuntu イメージ固有・⚠️ 罠あり）
 
-Ubuntu 24.04 の OCI イメージにも iptables の REJECT ルールが入っている可能性がある。OUTPUT が ACCEPT であることを確認（Cloudflare エッジへのアウトバウンドが通る状態）：
+Ubuntu 24.04 の OCI イメージには、`/etc/iptables/rules.v4` にハードコードで以下が含まれている：
+
+```
+-A INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT
+```
+
+この行が **ufw chains より前に評価される** ため、ufw の `allow 22/tcp` を削除しても **SSH 22 は世界中から到達可能なまま** となる。完全ゼロインバウンド化するには §8 で iptables から該当ルールを削除する必要がある。
+
+現状を確認：
 
 ```bash
-sudo iptables -L INPUT --line-numbers
+sudo iptables -L INPUT -n -v --line-numbers
 sudo iptables -L OUTPUT --line-numbers
+sudo grep -n "dport 22" /etc/iptables/rules.v4
 ```
+
+期待される現状（初期セットアップ中なので問題なし、§8 で削除する）：
+- INPUT chain にルール 4 として `ACCEPT tcp dpt:22 state NEW` が存在
+- INPUT chain にルール 3 として `ACCEPT all in lo` が存在（loopback、Cloudflare Access SSH の cloudflared 経由で使用される）
+- OUTPUT が ACCEPT（Cloudflare エッジへのアウトバウンドが通る状態）
+
+> **OCI 固有の挙動**: AWS や GCP の標準 Ubuntu イメージはこの ハードコード SSH ACCEPT を持たない。OCI Ubuntu イメージ特有の保守的設計で、「Security List/NSG だけ閉じれば外からの 22 は届かない」という前提を破る形になっている。**§8 で必ず削除すること**。
 
 ### 5-7. fail2ban 有効化
 
@@ -298,16 +314,18 @@ sudo cloudflared service install <TOKEN>
 
 ### 6-3. Public hostname 設定（webhook）
 
-Cloudflare ダッシュボードの同 Tunnel 画面で **Public Hostnames** タブ → **Add a public hostname**：
+Cloudflare ダッシュボードの同 Tunnel 画面で **Hostname routes (Beta)** タブ → **Add a hostname route**：
 
 | 項目 | 値 |
 |---|---|
 | **Subdomain** | `strike` |
 | **Domain** | `alforgelabs.com` |
 | **Path** | （空欄） |
-| **Service Type** | `HTTP` |
-| **URL** | `localhost:8000` |
+| **Type / Service** | `HTTP` |
+| **URL / Target** | `localhost:8000` |
 
+> **UI 表記の注意**: 2026 年現在の Cloudflare 新 UI では、旧「Public Hostnames」タブが **「Hostname routes (Beta)」** に改称されている。Cloudflare の古い記事や公式 docs では旧名が残っている場合がある。機能は同等。
+>
 > **メモ**: alpha-strike を 8000 番で起動する前提。アプリデプロイ時に変更したければ後で修正可能。
 >
 > **DNS への影響**: Cloudflare が `strike.alforgelabs.com` の CNAME を Tunnel に向けて自動作成する。**オレンジ雲（プロキシ ON）** で問題なし。
@@ -330,42 +348,52 @@ webhook 用に立てた同じ Tunnel に SSH も追加で乗せ、Cloudflare Acc
 
 ### 7-1. Tunnel に SSH の Public Hostname を追加（VM 側設定不要）
 
-Cloudflare ダッシュボード → **Zero Trust** → **Networks** → **Tunnels** → `alpha-strike-prod` → **Public Hostnames** タブ → **Add a public hostname**：
+Cloudflare ダッシュボード → **Zero Trust** → **Networks** → **Tunnels** → `alpha-strike-prod` → **Hostname routes (Beta)** タブ → **Add a hostname route**：
 
 | 項目 | 値 |
 |---|---|
 | **Subdomain** | `ssh` |
 | **Domain** | `alforgelabs.com` |
 | **Path** | （空欄） |
-| **Service Type** | `SSH` |
-| **URL** | `localhost:22` |
+| **Type / Service** | `SSH` |
+| **URL / Target** | `localhost:22` |
 
 > Cloudflare が `ssh.alforgelabs.com` の CNAME を Tunnel に向けて自動作成（オレンジ雲）。
+>
+> §6-3 で webhook 用に追加した `strike.alforgelabs.com` と並べる形で、もう 1 行追加する流れになる。
 
 ### 7-2. Cloudflare Access Application 設定（認証ポリシー）
 
-`ssh.alforgelabs.com` へのアクセスを認証で守る。
+`ssh.alforgelabs.com` へのアクセスを認証で守る。2026 年現在の新 UI で操作する：
 
-1. Cloudflare ダッシュボード → **Zero Trust** → **Access** → **Applications** → **Add an application**
-2. Application type: **Self-hosted**
-3. 以下を入力：
+1. Cloudflare ダッシュボード → サイドバーの **Access controls** → **Applications** → **+ Add an application**
+2. 表示されるモーダルで **Self-hosted and private** タブを選択
+3. サブタブから **Public DNS** を選択（`ssh.alforgelabs.com` は公開ドメイン経由のため）
+4. **Continue with Self-hosted and private** をクリック
+5. Application details 画面で以下を入力：
 
-| 項目 | 値 |
-|---|---|
-| **Application name** | `alpha-strike SSH` |
-| **Session Duration** | `24 hours`（任意） |
-| **Application domain** | `ssh.alforgelabs.com` |
+| セクション | 項目 | 値 |
+|---|---|---|
+| **Destinations → Public hostnames** | Subdomain | `ssh` |
+| | Domain（プルダウン） | `alforgelabs.com` |
+| | Path | （空欄） |
+| **Allow access through browser-based RDP, SSH, or VNC sessions** | トグル | **OFF**（ProxyCommand 経由なので不要、後から有効化可） |
 
-4. **Next** → ポリシー追加：
+6. **Access policies** セクションの **Create new policy** をクリック：
 
 | 項目 | 値 |
 |---|---|
 | **Policy name** | `Allow owner email` |
 | **Action** | `Allow` |
-| **Session duration** | `Same as application session timeout` |
-| **Configure rules: Include** | `Emails` → `yoshiaki@sakae.org`（自分のメールアドレス） |
+| **Include rule** | `Selector: Emails` → `Value: yoshiaki@sakae.org` |
 
-5. **Next** → **Add application**
+7. **Authentication** セクションは **Accept all available identity providers** を ON のまま（IdP 未設定の状態ならデフォルトの One-time PIN が使われる）
+8. ページ最下部の **Add application** で確定
+
+> **UI の罠（2026 年現在）**:
+> - 旧 UI の「Application name」「Session Duration」フィールドは新 UI では **見当たらない**。Application name は保存時に自動生成または別 UI で編集、Session Duration は組織デフォルト値が使用される。手順書通りの値を入れられなくても運用上の支障はない。
+> - **Additional settings** タブには App Launcher / Tags / Custom block pages / CORS など運用オプションが並ぶが、必須項目はない。デフォルトのまま **Application details** タブで保存して問題なし。
+> - 「Infrastructure」タブを選ぶと Access for Infrastructure 方式（短期証明書 + VM 側に SSH CA 信頼設定）になる。ProxyCommand 経由の従来方式は **Self-hosted and private → Public DNS** を選択する。
 
 > **認証方式**: デフォルトで One-time PIN（指定メールに 6 桁コード送信）が利用可能。Google SSO / GitHub SSO を追加したい場合は **Settings → Authentication** で IdP を有効化。
 
@@ -455,25 +483,67 @@ sudo ufw status verbose
 
 > **重要**: sshd 自体は引き続き localhost:22 で待ち受け続ける（cloudflared が `localhost:22` にプロキシするため）。`sudo systemctl status ssh` が `active` のままであることを確認。
 
-### 8-3. 外部からの 22 が閉じていることを確認
+### 8-3. iptables から SSH 22 ACCEPT ルールを削除（**OCI Ubuntu イメージ必須**）
+
+§5-6 で確認した通り、OCI Ubuntu イメージは `/etc/iptables/rules.v4` にハードコードで以下のルールを持っている：
+
+```
+-A INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT
+```
+
+これが **ufw chains より前に評価される** ため、§8-1 と §8-2 を完了しただけでは外部からの 22 はまだ到達可能。確認：
+
+```bash
+# 別ターミナル（ローカル）で
+nc -w 5 -vz <public-ip> 22
+# このとき "Connection succeeded" が返ったら iptables のハードコードルールが残っている証拠
+```
+
+以下で iptables ランタイムとファイル両方から削除：
+
+```bash
+# 1. 現在の INPUT chain の SSH ACCEPT ルールの行番号を確認
+sudo iptables -L INPUT -n -v --line-numbers | grep "dpt:22"
+
+# 2. 行番号（通常は 4）を指定して削除（cloudflared 経由は lo インターフェース ルールで通るので影響なし）
+sudo iptables -D INPUT 4
+
+# 3. 削除後の INPUT chain 確認（22 ACCEPT が消え、REJECT が残るはず）
+sudo iptables -L INPUT -n --line-numbers
+
+# 4. 永続化: rules.v4 から該当行を削除
+sudo sed -i "/-A INPUT -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT/d" /etc/iptables/rules.v4
+
+# 5. rules.v4 から消えたことを確認
+sudo grep "dport 22" /etc/iptables/rules.v4 || echo "(no 22 rule ✓)"
+
+# 6. sshd は localhost:22 で動作継続を確認
+sudo ss -tlnp | grep ":22 "
+```
+
+> **削除時のリスク評価**: iptables ルール 4 を削除しても、現在の SSH セッション（Cloudflare Access 経由 = cloudflared → localhost:22）は **lo インターフェース ルール（通常ルール 3 の `ACCEPT all in lo`）** で通るため切断されない。万一切断された場合は §補足の「Cloudflare Access SSH が動かなくなった場合の緊急復旧手順」を参照。
+>
+> **`netfilter-persistent` コマンドの注意**: コマンドは `/usr/sbin/netfilter-persistent` にあるが、非対話 SSH では PATH に含まれない場合がある。`rules.v4` を直接編集する方が確実。
+
+### 8-4. 外部からの 22 が閉じていることを確認
 
 ローカル PC の別ターミナルで：
 
 ```bash
-nc -vz <public-ip> 22
-# 期待: connection timed out（または refused）
+nc -w 5 -vz <public-ip> 22
+# 期待: "Connection refused"（iptables の REJECT で蹴られる）
 ```
 
 Cloudflare Access 経由はまだ通る：
 
 ```bash
-ssh alpha-strike
+ssh oracle-strike
 # 期待: Cloudflare Access 認証 → ログイン成功
 ```
 
-### 8-4. 暫定 SSH config エントリの削除
+### 8-5. 暫定 SSH config エントリの削除
 
-ローカル PC の `~/.ssh/config` から `Host alpha-strike-direct` のセクションを削除（もう使わない）。
+ローカル PC の `~/.ssh/config` から `Host alpha-strike-direct`（または初回設定時に使った別名）のセクションを削除（もう使わない）。
 
 ---
 
@@ -500,9 +570,10 @@ ssh alpha-strike
 以下を全て満たしたら次フェーズ（swap 設定・OpenD インストール・アプリデプロイ）へ進む：
 
 - [ ] `alforgelabs.com` の DNS が Cloudflare 管理に切り替わり、既存 LP が無事動作している
-- [ ] Cloudflare Access SSH 経由で `ssh alpha-strike` でログインできる
+- [ ] Cloudflare Access SSH 経由で `ssh oracle-strike` でログインできる
 - [ ] OS が Ubuntu 24.04、最新、JST、ホスト名 `alpha-strike-01`
-- [ ] **NSG の Ingress ルールが 0 件、ufw も 22/tcp が削除済み（完全ゼロインバウンド）**
+- [ ] **三層完全閉鎖**: NSG の Ingress ルールが 0 件 + ufw のルールが 0 件 + iptables の SSH 22 ACCEPT も削除済み
+- [ ] 外部から `nc -w 5 -vz <public-ip> 22` が `Connection refused` を返す
 - [ ] Cloudflare Tunnel が systemd で常駐し、`strike.alforgelabs.com` と `ssh.alforgelabs.com` が Cloudflare エッジまで疎通
 - [ ] alpha-bot VM とプライベート IP で双方向疎通
 
@@ -567,6 +638,46 @@ ssh alpha-strike
 
 ---
 
+## 補足：DNS 伝播遅延への一時回避策（ローカル PC 側）
+
+NS をムームードメインから Cloudflare に切り替えた直後、**自宅 ISP の DNS リゾルバーが古いキャッシュを保持** しているため、ローカル PC から `ssh.alforgelabs.com` や `strike.alforgelabs.com` が解決できない場合がある（数時間〜半日続くことあり）。
+
+### 確認手順
+
+```bash
+# 公開 DNS では既に解決されているか
+dig @1.1.1.1 +short ssh.alforgelabs.com
+dig @8.8.8.8 +short ssh.alforgelabs.com
+
+# ローカル DNS は古いキャッシュかも
+dig +short ssh.alforgelabs.com
+```
+
+### 一時回避策（/etc/hosts に Cloudflare のプロキシ IP を書き込む）
+
+```bash
+# 1.1.1.1 から得た Cloudflare プロキシ IP を /etc/hosts に追加
+echo "$(dig @1.1.1.1 +short ssh.alforgelabs.com | head -1) ssh.alforgelabs.com" | sudo tee -a /etc/hosts
+
+# ssh.alforgelabs.com 以外にも strike.alforgelabs.com が必要なら同様に追加
+```
+
+### 伝播完了後のクリーンアップ
+
+```bash
+# 1. 自宅 DNS で解決できるようになったか確認
+dig +short ssh.alforgelabs.com
+# 2. 解決できたら /etc/hosts から暫定エントリ削除
+sudo sed -i '' '/ssh\.alforgelabs\.com/d' /etc/hosts   # macOS
+# sudo sed -i '/ssh\.alforgelabs\.com/d' /etc/hosts    # Linux
+# 3. ssh が動くか確認
+ssh oracle-strike 'hostname'
+```
+
+> Cloudflare のプロキシ IP は時間で変わる可能性があるため、`/etc/hosts` への追記は**接続テスト目的の暫定対応**として扱い、伝播完了後は必ず削除すること。
+
+---
+
 ## 補足：Cloudflare Access SSH が動かなくなった場合の緊急復旧手順
 
 Cloudflare Tunnel 障害・Access ポリシー誤設定で SSH 不能になった場合の復旧経路：
@@ -575,7 +686,12 @@ Cloudflare Tunnel 障害・Access ポリシー誤設定で SSH 不能になっ�
 2. ブラウザ上から Console 接続でログイン（SSH を経由しない）
 3. NSG に SSH 22 ルールを一時追加（現在の自宅 IP/32）
 4. ufw も `sudo ufw allow 22/tcp` で再開放
-5. 通常 SSH でログインして cloudflared / Access 設定を修復
+5. **iptables にも 22 ACCEPT ルールを一時追加** （§5-6 の OCI 罠で必須）:
+   ```bash
+   sudo iptables -I INPUT 4 -p tcp -m state --state NEW -m tcp --dport 22 -j ACCEPT
+   ```
+6. 通常 SSH でログインして cloudflared / Access 設定を修復
+7. 修復完了後、再度 §8 の手順でゼロインバウンドに戻す
 6. 修復完了後、再度 §8 の手順でゼロインバウンドに戻す
 
 > Console connection は OCI Always Free 枠で利用可能。**この経路を必ず一度試しておく** ことで、最悪のケースでも復旧手段を確保できる。
