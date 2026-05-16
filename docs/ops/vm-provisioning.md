@@ -3,7 +3,7 @@
 **対象**: Oracle Cloud Infrastructure (OCI) Always Free 枠での E2.1.Micro 追加プロビジョニング
 **用途**: alpha-strike (webhook サーバー) + OpenD (futu/moomoo) の同居運用
 **前提**: alpha-bot がすでに別の E2.1.Micro で稼働中
-**公開方式**: Cloudflare Tunnel（インバウンドポート開放なし、TLS 終端は Cloudflare 側）
+**公開方式**: Cloudflare Tunnel（webhook + SSH 共に Tunnel 経由、最終的にゼロインバウンド構成）
 
 ---
 
@@ -15,8 +15,11 @@
 - [ ] alpha-bot VM の **VCN 名・サブネット名・リージョン** を確認（同一 VCN に置く前提）
 - [ ] **ムームードメイン管理画面**にログイン可能（`alforgelabs.com` の nameserver 変更で使用）
 - [ ] **Cloudflare アカウント** を保有、Zero Trust の Free plan を有効化済み
+- [ ] ローカル PC に **Homebrew (macOS) または apt (Linux)** が利用可能（§7 で `cloudflared` をインストール）
 
 > **Cloudflare Zero Trust Free plan の有効化**: Cloudflare ダッシュボード → Zero Trust → 初回アクセス時に Free plan を選択。クレジットカード登録は求められるが、Free 範囲内なら課金は発生しない。
+>
+> **本手順書の最終ゴール**: webhook も SSH も Cloudflare Tunnel 経由でアクセスし、OCI 側の NSG はインバウンドルール 0 件（完全 egress only）にする。自宅 IP が DHCP で変動しても影響を受けない構成。
 
 ---
 
@@ -63,7 +66,7 @@ CAA                           （なし）
 
 > **過去の典型ハマり**: GitHub Pages のカスタムドメインを Cloudflare プロキシ経由にすると、GitHub の自動証明書更新時に ACME チャレンジが Cloudflare の Edge IP に向き、検証が失敗する → HTTPS が壊れる。**DNS only に設定すれば回避可能**。
 >
-> `strike.alforgelabs.com`（後で Tunnel で追加）はオレンジ雲（Tunnel 経由）で OK。GitHub Pages 配下のレコードだけグレー雲にする。
+> `strike.alforgelabs.com` および `ssh.alforgelabs.com`（後で Tunnel で追加）はオレンジ雲（Tunnel 経由）で OK。GitHub Pages 配下のレコードだけグレー雲にする。
 
 ### 1-4. Cloudflare 指定の nameserver を取得
 
@@ -88,19 +91,15 @@ yyy.ns.cloudflare.com
 反映までは通常数時間、最大 48 時間。以下で確認：
 
 ```bash
-# nameserver が Cloudflare に切り替わったか
 dig +short NS alforgelabs.com
 # 期待: xxx.ns.cloudflare.com / yyy.ns.cloudflare.com
 
-# apex の応答が GitHub Pages のままか
 dig +short A alforgelabs.com
 # 期待: 185.199.108.153 / 109.153 / 110.153 / 111.153
 
-# www の CNAME も維持されているか
 dig +short CNAME www.alforgelabs.com
 # 期待: alforge-labs.github.io.
 
-# TXT も全て維持されているか
 dig +short TXT alforgelabs.com
 # 期待: SPF + google-site-verification × 2 がそのまま返る
 ```
@@ -122,18 +121,18 @@ Cloudflare ダッシュボード上でも該当ドメインのステータスが
 
 - **同一 VCN・同一 public subnet に配置**: alpha-bot と同じ VCN 内に置き、プライベート IP で内部通信できるようにする
 
-### 2-2. セキュリティリスト（または NSG）設計
+### 2-2. セキュリティリスト（または NSG）設計（**初期セットアップ用・暫定**）
 
-新規 NSG を `nsg-alpha-strike` として作成、**SSH のみ開ける**：
+新規 NSG を `nsg-alpha-strike` として作成。**最終的には Ingress 0 件にするが、初回セットアップ時のみ SSH を一時許可する**：
 
-| 方向 | プロトコル | ポート | ソース/宛先 | 用途 |
-|---|---|---|---|---|
-| Ingress | TCP | 22 | 自宅 IP/32 | SSH（自分の IP に限定） |
-| Egress | All | All | 0.0.0.0/0 | 外向き全許可（Cloudflare Tunnel のアウトバウンド接続に必須） |
+| 方向 | プロトコル | ポート | ソース/宛先 | 用途 | 状態 |
+|---|---|---|---|---|---|
+| Ingress | TCP | 22 | 自宅 IP/32 もしくは現在の自宅 IP（取得時点） | SSH（**§8 で削除予定**） | 一時 |
+| Egress | All | All | 0.0.0.0/0 | 外向き全許可（Tunnel 通信に必須） | 恒久 |
 
-> **Cloudflare Tunnel の動作原理**: VM 側の `cloudflared` プロセスが Cloudflare エッジへ **アウトバウンド接続を確立** し、その上で webhook トラフィックを受ける。インバウンド 443/80 を開ける必要が一切ない。
+> **自宅 IP が DHCP で変動する場合**: 初期セットアップ時はその瞬間の自宅 IP（`curl ifconfig.io` で取得）を /32 で許可。Cloudflare Access SSH への切替（§7）が完了したら、この Ingress ルールは §8 で削除する。それ以降は IP 変動に一切影響されない。
 >
-> **SSH すら閉じる選択肢**: 後段で Cloudflare Access SSH を導入すれば、22 も閉じてゼロインバウンドにできる。今回はまず SSH 22 を残し、運用が安定したら検討する。
+> **Cloudflare Tunnel の動作原理**: VM 側の `cloudflared` プロセスが Cloudflare エッジへ **アウトバウンド接続を確立** し、その上で webhook も SSH も中継する。インバウンド開放は完全に不要になる。
 
 ### 2-3. リージョン
 
@@ -163,11 +162,13 @@ alpha-bot と同一リージョン必須。
 | **Boot volume size** | 50 GB（Always Free 枠は合計 200GB まで無料） |
 
 3. **Create** をクリック → プロビジョニング完了まで 1〜2 分待機
-4. **Public IP** をメモ（SSH 用、DNS には使わない）
+4. **Public IP** をメモ（初回 SSH 用、後段では使わない）
 
 ---
 
-## 4. SSH 接続確認
+## 4. 初回 SSH 接続確認（暫定経路）
+
+§7 で Cloudflare Access SSH に切り替えるまでの **一時的な経路**。
 
 ### 4-1. ローカルから疎通テスト
 
@@ -175,19 +176,20 @@ alpha-bot と同一リージョン必須。
 ssh -i ~/.ssh/id_ed25519 ubuntu@<public-ip>
 ```
 
-### 4-2. SSH config に登録
+### 4-2. SSH config に登録（暫定）
 
 `~/.ssh/config` に追記：
 
 ```
-Host alpha-strike
+# 暫定設定（§7 完了後に §7-4 の Cloudflare Access 経由設定で上書きする）
+Host alpha-strike-direct
   HostName <public-ip>
   User ubuntu
   IdentityFile ~/.ssh/id_ed25519
   ServerAliveInterval 60
 ```
 
-以降は `ssh alpha-strike` でアクセス可能。
+以降 §5〜§6 の作業は `ssh alpha-strike-direct` で接続して行う。
 
 ---
 
@@ -215,14 +217,14 @@ sudo hostnamectl set-hostname alpha-strike-01
 echo "127.0.1.1 alpha-strike-01" | sudo tee -a /etc/hosts
 ```
 
-### 5-4. ufw（OS 側ファイアウォール）
+### 5-4. ufw（OS 側ファイアウォール・**初期暫定**）
 
-SSH 以外は全閉。Cloudflare Tunnel はアウトバウンドのみで動作するのでインバウンド許可は不要：
+**§8 で 22/tcp ルールを削除する** が、初回セットアップ中は SSH を維持するため以下を設定：
 
 ```bash
 sudo ufw default deny incoming
 sudo ufw default allow outgoing
-sudo ufw allow 22/tcp
+sudo ufw allow 22/tcp   # §8 で削除予定
 sudo ufw enable
 sudo ufw status verbose
 ```
@@ -242,16 +244,16 @@ ClientAliveCountMax 3
 sudo systemctl restart ssh
 ```
 
+> **重要**: Cloudflare Access SSH 経由に切り替えた後も、内部の sshd は localhost:22 で待ち受け続ける必要がある（cloudflared が localhost:22 にプロキシする）。sshd の停止はしない。
+
 ### 5-6. iptables 確認（OCI Ubuntu イメージ固有）
 
-Ubuntu 24.04 の OCI イメージにも iptables の REJECT ルールが入っている可能性がある。**今回は SSH のみ使うので追加開放は不要**だが、念のため現状を確認：
+Ubuntu 24.04 の OCI イメージにも iptables の REJECT ルールが入っている可能性がある。OUTPUT が ACCEPT であることを確認（Cloudflare エッジへのアウトバウンドが通る状態）：
 
 ```bash
 sudo iptables -L INPUT --line-numbers
 sudo iptables -L OUTPUT --line-numbers
 ```
-
-OUTPUT に REJECT が無いこと（Cloudflare エッジへのアウトバウンドが通る状態）を確認。通常は ACCEPT がデフォルト。
 
 ### 5-7. fail2ban 有効化
 
@@ -264,11 +266,11 @@ SSH ブルートフォース対策のデフォルト jail が自動有効化さ�
 
 ---
 
-## 6. Cloudflare Tunnel 接続（プロビジョニングの最後）
+## 6. Cloudflare Tunnel 接続（webhook 用）
 
-VM とアプリの間に挟む形でこの段階で Tunnel を確立しておくと、アプリデプロイ時にすぐ公開できる。
+VM とアプリの間に挟む形で webhook 用の Tunnel を確立する。
 
-### 6-1. cloudflared インストール
+### 6-1. cloudflared インストール（VM 側）
 
 ```bash
 sudo mkdir -p --mode=0755 /usr/share/keyrings
@@ -294,7 +296,7 @@ sudo cloudflared service install <TOKEN>
 
 これで `cloudflared.service` が systemd ユニットとして登録・起動される。
 
-### 6-3. Public hostname 設定
+### 6-3. Public hostname 設定（webhook）
 
 Cloudflare ダッシュボードの同 Tunnel 画面で **Public Hostnames** タブ → **Add a public hostname**：
 
@@ -308,7 +310,7 @@ Cloudflare ダッシュボードの同 Tunnel 画面で **Public Hostnames** タ
 
 > **メモ**: alpha-strike を 8000 番で起動する前提。アプリデプロイ時に変更したければ後で修正可能。
 >
-> **DNS への影響**: Cloudflare が `strike.alforgelabs.com` の CNAME を Tunnel に向けて自動作成する。これは **オレンジ雲（プロキシ ON）** で問題なし。GitHub Pages を載せている apex/www のグレー雲設定とは独立。
+> **DNS への影響**: Cloudflare が `strike.alforgelabs.com` の CNAME を Tunnel に向けて自動作成する。**オレンジ雲（プロキシ ON）** で問題なし。
 
 ### 6-4. Tunnel 起動確認
 
@@ -322,35 +324,191 @@ sudo journalctl -u cloudflared -n 50 --no-pager
 
 ---
 
-## 7. 疎通確認チェックリスト
+## 7. Cloudflare Access for SSH への切替
 
-- [ ] ローカル → VM へ `ssh alpha-strike` でログインできる
-- [ ] VM → インターネット egress（`curl -I https://google.com` が 200/301）
-- [ ] VM → alpha-bot VM へ private IP で疎通（`ping <alpha-bot-private-ip>`）
-- [ ] `dig +short strike.alforgelabs.com` が Cloudflare のプロキシ IP を返す（CNAME 経由）
-- [ ] `https://strike.alforgelabs.com` にブラウザアクセスで 502 が返る
-- [ ] `https://alforgelabs.com` の LP が従来通り表示される（移管影響なし確認）
-- [ ] `dmesg | grep -i kill` で何も出ない
-- [ ] `free -m` で空きメモリが 700MB 以上ある（ベースライン）
-- [ ] `sudo systemctl is-active cloudflared` が `active`
-- [ ] `sudo systemctl is-active fail2ban` が `active`
+webhook 用に立てた同じ Tunnel に SSH も追加で乗せ、Cloudflare Access の認証層で SSH を保護する。**自宅 IP が DHCP で変動しても、ホテル・スマホテザリングなど任意の場所から接続可能** になる。
+
+### 7-1. Tunnel に SSH の Public Hostname を追加（VM 側設定不要）
+
+Cloudflare ダッシュボード → **Zero Trust** → **Networks** → **Tunnels** → `alpha-strike-prod` → **Public Hostnames** タブ → **Add a public hostname**：
+
+| 項目 | 値 |
+|---|---|
+| **Subdomain** | `ssh` |
+| **Domain** | `alforgelabs.com` |
+| **Path** | （空欄） |
+| **Service Type** | `SSH` |
+| **URL** | `localhost:22` |
+
+> Cloudflare が `ssh.alforgelabs.com` の CNAME を Tunnel に向けて自動作成（オレンジ雲）。
+
+### 7-2. Cloudflare Access Application 設定（認証ポリシー）
+
+`ssh.alforgelabs.com` へのアクセスを認証で守る。
+
+1. Cloudflare ダッシュボード → **Zero Trust** → **Access** → **Applications** → **Add an application**
+2. Application type: **Self-hosted**
+3. 以下を入力：
+
+| 項目 | 値 |
+|---|---|
+| **Application name** | `alpha-strike SSH` |
+| **Session Duration** | `24 hours`（任意） |
+| **Application domain** | `ssh.alforgelabs.com` |
+
+4. **Next** → ポリシー追加：
+
+| 項目 | 値 |
+|---|---|
+| **Policy name** | `Allow owner email` |
+| **Action** | `Allow` |
+| **Session duration** | `Same as application session timeout` |
+| **Configure rules: Include** | `Emails` → `yoshiaki@sakae.org`（自分のメールアドレス） |
+
+5. **Next** → **Add application**
+
+> **認証方式**: デフォルトで One-time PIN（指定メールに 6 桁コード送信）が利用可能。Google SSO / GitHub SSO を追加したい場合は **Settings → Authentication** で IdP を有効化。
+
+### 7-3. ローカル PC への cloudflared インストール
+
+macOS:
+
+```bash
+brew install cloudflared
+cloudflared --version
+```
+
+Linux:
+
+```bash
+# Ubuntu/Debian の場合
+sudo mkdir -p --mode=0755 /usr/share/keyrings
+curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+  | sudo tee /usr/share/keyrings/cloudflare-main.gpg >/dev/null
+echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared $(lsb_release -cs) main" \
+  | sudo tee /etc/apt/sources.list.d/cloudflared.list
+sudo apt update && sudo apt -y install cloudflared
+```
+
+### 7-4. ローカル PC の SSH config を Cloudflare Access 経由に変更
+
+`~/.ssh/config` に追記（既存の `Host alpha-strike-direct` はそのまま残し、新規エントリを追加）：
+
+```
+Host alpha-strike
+  HostName ssh.alforgelabs.com
+  User ubuntu
+  IdentityFile ~/.ssh/id_ed25519
+  ProxyCommand cloudflared access ssh --hostname %h
+  ServerAliveInterval 60
+```
+
+> `ProxyCommand cloudflared access ssh --hostname %h` が肝。SSH トラフィックを Cloudflare Access 経由で Tunnel にルーティングする。
+
+### 7-5. 接続テスト
+
+```bash
+ssh alpha-strike
+```
+
+初回接続時：
+1. ターミナルにブラウザ認証 URL が表示される
+2. ブラウザで Cloudflare Access の認証画面 → メールアドレス入力 → One-time PIN を受け取り入力
+3. 認証成功後、SSH セッションが確立
+
+認証は **24 時間有効**（§7-2 で設定した Session Duration）、その間は再認証不要。
+
+### 7-6. 動作確認
+
+- [ ] `ssh alpha-strike` で Cloudflare Access 認証画面が出る
+- [ ] One-time PIN 認証後に SSH ログインできる
+- [ ] `hostname` の結果が `alpha-strike-01`
+- [ ] `who` で自分のセッションが表示される
+- [ ] 自宅 IP が変わってもアクセス可能（モバイル回線テザリング等でも動作確認しておくと安心）
 
 ---
 
-## 8. プロビジョニング完了基準
+## 8. インバウンドポート完全閉鎖（ゼロインバウンド構成へ）
+
+Cloudflare Access SSH が動いたら、暫定で開けていた SSH 22 を完全に閉じる。
+
+### 8-1. NSG から SSH 22 ルールを削除
+
+OCI コンソール → **Networking** → **Virtual Cloud Networks** → 対象 VCN → **Network Security Groups** → `nsg-alpha-strike` → Ingress の SSH 22 ルールを削除。
+
+最終的に NSG は以下の状態になる：
+
+| 方向 | プロトコル | ポート | ソース/宛先 | 用途 |
+|---|---|---|---|---|
+| Egress | All | All | 0.0.0.0/0 | 外向き全許可（Tunnel 通信） |
+
+Ingress ルールはゼロ。
+
+### 8-2. ufw から 22/tcp を削除
+
+VM 内で（このときの SSH 接続は Cloudflare Access 経由）：
+
+```bash
+sudo ufw delete allow 22/tcp
+sudo ufw status verbose
+```
+
+> **重要**: sshd 自体は引き続き localhost:22 で待ち受け続ける（cloudflared が `localhost:22` にプロキシするため）。`sudo systemctl status ssh` が `active` のままであることを確認。
+
+### 8-3. 外部からの 22 が閉じていることを確認
+
+ローカル PC の別ターミナルで：
+
+```bash
+nc -vz <public-ip> 22
+# 期待: connection timed out（または refused）
+```
+
+Cloudflare Access 経由はまだ通る：
+
+```bash
+ssh alpha-strike
+# 期待: Cloudflare Access 認証 → ログイン成功
+```
+
+### 8-4. 暫定 SSH config エントリの削除
+
+ローカル PC の `~/.ssh/config` から `Host alpha-strike-direct` のセクションを削除（もう使わない）。
+
+---
+
+## 9. 疎通確認チェックリスト
+
+- [ ] ローカル → VM へ `ssh alpha-strike`（Cloudflare Access 経由）でログインできる
+- [ ] `<public-ip>:22` には外部から接続できない（`nc -vz` でタイムアウト）
+- [ ] VM → インターネット egress（`curl -I https://google.com` が 200/301）
+- [ ] VM → alpha-bot VM へ private IP で疎通（`ping <alpha-bot-private-ip>`）
+- [ ] `dig +short strike.alforgelabs.com` が Cloudflare のプロキシ IP を返す
+- [ ] `dig +short ssh.alforgelabs.com` が Cloudflare のプロキシ IP を返す
+- [ ] `https://strike.alforgelabs.com` にブラウザアクセスで 502 が返る
+- [ ] `https://alforgelabs.com` の LP が従来通り表示される
+- [ ] `dmesg | grep -i kill` で何も出ない
+- [ ] `free -m` で空きメモリが 700MB 以上ある
+- [ ] `sudo systemctl is-active cloudflared` が `active`
+- [ ] `sudo systemctl is-active fail2ban` が `active`
+- [ ] `sudo systemctl is-active ssh` が `active`（localhost:22 で待ち受け続けている）
+
+---
+
+## 10. プロビジョニング完了基準
 
 以下を全て満たしたら次フェーズ（swap 設定・OpenD インストール・アプリデプロイ）へ進む：
 
 - [ ] `alforgelabs.com` の DNS が Cloudflare 管理に切り替わり、既存 LP が無事動作している
-- [ ] SSH で `alpha-strike` ホスト名で接続できる
+- [ ] Cloudflare Access SSH 経由で `ssh alpha-strike` でログインできる
 - [ ] OS が Ubuntu 24.04、最新、JST、ホスト名 `alpha-strike-01`
-- [ ] ufw + NSG の二層防御で SSH のみインバウンド許可
-- [ ] Cloudflare Tunnel が systemd で常駐し、`strike.alforgelabs.com` が Cloudflare エッジまで疎通
+- [ ] **NSG の Ingress ルールが 0 件、ufw も 22/tcp が削除済み（完全ゼロインバウンド）**
+- [ ] Cloudflare Tunnel が systemd で常駐し、`strike.alforgelabs.com` と `ssh.alforgelabs.com` が Cloudflare エッジまで疎通
 - [ ] alpha-bot VM とプライベート IP で双方向疎通
 
 ---
 
-## 9. 次フェーズ予告
+## 11. 次フェーズ予告
 
 プロビジョニング完了後、以下を順に実施：
 
@@ -364,16 +522,18 @@ sudo journalctl -u cloudflared -n 50 --no-pager
 
 ---
 
-## 補足：Cloudflare Tunnel を採用したメリット
+## 補足：Cloudflare Tunnel + Access を採用したメリット
 
-| 項目 | 直接 443 公開 | Cloudflare Tunnel |
+| 項目 | 直接 443/22 公開 | Cloudflare Tunnel + Access |
 |---|---|---|
-| インバウンドポート開放 | 80/443 必要 | **0 ポート（egress のみ）** |
+| インバウンドポート開放 | 80/443/22 必要 | **0 ポート（egress のみ）** |
 | TLS 証明書管理 | Let's Encrypt + certbot を VM 側で運用 | **Cloudflare が自動管理** |
 | Public IP の秘匿 | できない | **完全秘匿** |
-| DDoS 防御 | OCI レイヤーのみ | **Cloudflare の DDoS 防御が前段に入る** |
+| DDoS 防御 | OCI レイヤーのみ | **Cloudflare の DDoS 防御が前段** |
 | WAF | 自前構築 | **Free plan の WAF 一部利用可** |
-| 認証層追加 | 自前 | **Cloudflare Access で IdP 連携可（将来）** |
+| SSH の IP 制限 | 自宅 IP/32（DHCP 変動で壊れる） | **メールアドレスベース認証（場所を選ばない）** |
+| SSH ブルートフォース対策 | fail2ban 等を自前で運用 | **Cloudflare Access の認証層で完全遮断** |
+| 接続元の監査ログ | 自前で SSH ログ収集 | **Cloudflare 側で全アクセスログ自動記録** |
 | コスト | 無料 | **無料** |
 
 ---
@@ -383,12 +543,14 @@ sudo journalctl -u cloudflared -n 50 --no-pager
 | プロセス | RAM 目安 |
 |---|---|
 | OS（Ubuntu 24.04 最小構成） | 200〜300 MB |
-| cloudflared（Tunnel エージェント） | 30〜50 MB |
+| cloudflared（Tunnel エージェント、webhook + SSH 兼用） | 30〜50 MB |
 | OpenD（Java ベース、常駐） | 250〜400 MB |
 | alpha-strike（FastAPI/Uvicorn） | 150〜250 MB |
 | **合計** | **630〜1000 MB** |
 
 1 GB RAM に対して常時 **80〜95% 使用** の張り付き運用となるため、本番資金投入前に必ずペーパートレードで `dmesg | grep -i kill` を観測し、OOM Killer 発動の痕跡が無いことを確認すること。swap 4 GB と zram を次フェーズで導入することで、瞬間的なメモリピークは吸収できる想定。
+
+> cloudflared は webhook と SSH の両 Public Hostname を 1 プロセスで処理するため、SSH 用に追加メモリは発生しない。
 
 ---
 
@@ -402,3 +564,18 @@ sudo journalctl -u cloudflared -n 50 --no-pager
 4. 反映に数時間〜48h
 
 > **予防策**: 移管前にムームードメインの DNS 管理画面のスクリーンショットを必ず保存。設定差分を後から復元できるようにする。
+
+---
+
+## 補足：Cloudflare Access SSH が動かなくなった場合の緊急復旧手順
+
+Cloudflare Tunnel 障害・Access ポリシー誤設定で SSH 不能になった場合の復旧経路：
+
+1. OCI コンソール → **Compute** → 対象インスタンス → **Console connection** → **Launch Cloud Shell connection**
+2. ブラウザ上から Console 接続でログイン（SSH を経由しない）
+3. NSG に SSH 22 ルールを一時追加（現在の自宅 IP/32）
+4. ufw も `sudo ufw allow 22/tcp` で再開放
+5. 通常 SSH でログインして cloudflared / Access 設定を修復
+6. 修復完了後、再度 §8 の手順でゼロインバウンドに戻す
+
+> Console connection は OCI Always Free 枠で利用可能。**この経路を必ず一度試しておく** ことで、最悪のケースでも復旧手段を確保できる。
