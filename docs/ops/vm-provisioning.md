@@ -40,10 +40,16 @@ CAA                           （なし）
 
 ### 1-2. Cloudflare にドメインを追加
 
-1. Cloudflare ダッシュボード → **Add a site** → `alforgelabs.com` を入力
-2. **Free plan** を選択
-3. Cloudflare の自動 DNS スキャナーが既存レコードを検出 → 表示される一覧と上記 §1-1 が一致するか確認
-4. レコードを **Continue** で確定
+1. Cloudflare ダッシュボード → **Account home** から、以下のいずれかでドメイン追加画面を開く：
+   - **Domains** カードの **Add a domain** ボタンをクリック
+   - または、画面右上の **+ Add** ボタン → **Domain** を選択
+   - または、左サイドバーの **Domains** メニュー → ドメイン追加画面へ遷移
+2. ドメイン入力欄に `alforgelabs.com` を入力 → **Continue**
+3. プラン選択画面で **Free** を選択 → **Continue**
+4. Cloudflare の自動 DNS スキャナーが既存レコードを検出 → 表示される一覧と上記 §1-1 が一致するか確認
+5. レコードを **Continue** で確定
+
+> **UI 表記の注意**: 古い Cloudflare 記事や手順書では「Add a site」と記載されていることがあるが、2026 年現在の UI では **Add a domain** に変更されている。機能としては同等。
 
 ### 1-3. GitHub Pages 共存設定（重要・罠あり）
 
