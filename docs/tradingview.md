@@ -1,6 +1,6 @@
 # TradingView アラート設定ガイド
 
-本ドキュメントは alpha-strike の Webhook サーバーを **TradingView Premium 以上のアラート機能** から呼び出すための設定手順をまとめたものです。
+本ドキュメントは alpha-strike の Webhook サーバーを **TradingView Essential 以上のアラート機能** から呼び出すための設定手順をまとめたものです。
 
 > **前提**: VM (`oracle-strike` = `alpha-strike-01`) が [VM プロビジョニング手順書](./ops/vm-provisioning.md) の §0〜§9 まで完了し、`https://strike.alforgelabs.com` で Cloudflare Tunnel 経由の公開 URL が稼働していること。OANDA / moomoo の認証情報も `/etc/alpha-strike/.env` に投入済みであること。
 
@@ -52,7 +52,7 @@ WAF Custom Rule が Free plan の枠を超える場合や、より柔軟なロ�
 5. **Message** 欄に下記「アラートメッセージ JSON」を貼り付ける
 6. **Create** で保存
 
-> **Premium 以上必須**: TradingView の Webhook URL は **Premium plan 以上** でのみ利用可能。Pro / Pro+ では `alert()` の `message` 欄は使えるが Webhook 配信先は設定不可。
+> **Essential 以上必須**: TradingView の Webhook URL は **Essential plan 以上** でのみ利用可能（Essential はアラート 20 件まで、Plus は 100 件まで、Premium は 400 件まで等の上限差はあるが、Webhook 機能自体は Essential から利用できる）。Free / Basic では Webhook 配信先を設定できない。
 
 ---
 
