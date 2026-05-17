@@ -37,7 +37,9 @@ VM 側で実行する想定:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
+import os
 import sys
 from datetime import datetime, timedelta
 
@@ -48,6 +50,31 @@ from moomoo import (  # type: ignore[import-not-found]
     TrdEnv,
     TrdMarket,
 )
+
+
+@contextlib.contextmanager
+def _suppress_stdout():
+    """moomoo SDK が起動時に独自ロガーで stdout に書き込むので、
+    JSON モード時はそれを /dev/null に redirect する。
+    sys.stdout の差し替えに加え、C 拡張からの直接書き込みにも備えて
+    OS レベルの fd 1 も devnull に向け直す。
+    """
+    devnull_path = os.devnull
+    saved_stdout = sys.stdout
+    saved_fd = os.dup(1)
+    devnull_fd = os.open(devnull_path, os.O_WRONLY)
+    try:
+        # sys.stdout を捨てる
+        sys.stdout = open(devnull_path, "w")
+        # fd 1 も devnull に
+        os.dup2(devnull_fd, 1)
+        yield
+    finally:
+        os.dup2(saved_fd, 1)
+        os.close(saved_fd)
+        os.close(devnull_fd)
+        sys.stdout.close()
+        sys.stdout = saved_stdout
 
 _MARKET_MAP = {
     "US": TrdMarket.US,
@@ -219,9 +246,6 @@ def main() -> int:
     start_str = start_dt.strftime("%Y-%m-%d 00:00:00")
     end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
 
-    ctx = OpenSecTradeContext(
-        filter_trdmarket=market, host=args.host, port=args.port
-    )
     # warnings は JSON 出力にも含めるため result に集約。
     # JSON モード時は stderr への WARN を抑制 (ssh/pipe で stdout と混ざる罠を避ける)。
     warnings: list[str] = []
@@ -236,52 +260,70 @@ def main() -> int:
         "warnings": warnings,
     }
     common_kwargs = {"warnings_sink": warnings, "quiet": args.json}
-    try:
-        ok, info = _safe_query(
-            "accinfo_query", ctx.accinfo_query, trd_env=trd_env, **common_kwargs
-        )
-        result["accinfo"] = _df_to_records(info, ACCINFO_KEY_FIELDS) if ok else []
 
-        ok, pos = _safe_query(
-            "position_list_query",
-            ctx.position_list_query,
-            trd_env=trd_env,
-            **common_kwargs,
+    # moomoo SDK は OpenSecTradeContext 生成と各クエリの過程で独自ロガーを
+    # 介して stdout にタイムスタンプログを書き出すため、JSON モード時はそれを
+    # /dev/null に redirect しないと出力が valid JSON にならない。
+    stdout_suppressor = _suppress_stdout() if args.json else contextlib.nullcontext()
+    with stdout_suppressor:
+        ctx = OpenSecTradeContext(
+            filter_trdmarket=market, host=args.host, port=args.port
         )
-        result["positions"] = _df_to_records(pos, POSITION_KEY_FIELDS) if ok else []
+        try:
+            ok, info = _safe_query(
+                "accinfo_query",
+                ctx.accinfo_query,
+                trd_env=trd_env,
+                **common_kwargs,
+            )
+            result["accinfo"] = (
+                _df_to_records(info, ACCINFO_KEY_FIELDS) if ok else []
+            )
 
-        ok, pending = _safe_query(
-            "order_list_query (pending)",
-            ctx.order_list_query,
-            trd_env=trd_env,
-            status_filter_list=PENDING_STATUSES,
-            **common_kwargs,
-        )
-        result["pending_orders"] = (
-            _df_to_records(pending, ORDER_KEY_FIELDS) if ok else []
-        )
+            ok, pos = _safe_query(
+                "position_list_query",
+                ctx.position_list_query,
+                trd_env=trd_env,
+                **common_kwargs,
+            )
+            result["positions"] = (
+                _df_to_records(pos, POSITION_KEY_FIELDS) if ok else []
+            )
 
-        ok, orders = _safe_query(
-            "order_list_query (recent)",
-            ctx.order_list_query,
-            trd_env=trd_env,
-            start=start_str,
-            end=end_str,
-            **common_kwargs,
-        )
-        result["recent_orders"] = (
-            _df_to_records(orders, ORDER_KEY_FIELDS) if ok else []
-        )
+            ok, pending = _safe_query(
+                "order_list_query (pending)",
+                ctx.order_list_query,
+                trd_env=trd_env,
+                status_filter_list=PENDING_STATUSES,
+                **common_kwargs,
+            )
+            result["pending_orders"] = (
+                _df_to_records(pending, ORDER_KEY_FIELDS) if ok else []
+            )
 
-        ok, deals = _safe_query(
-            "deal_list_query",
-            ctx.deal_list_query,
-            trd_env=trd_env,
-            **common_kwargs,
-        )
-        result["recent_deals"] = _df_to_records(deals, DEAL_KEY_FIELDS) if ok else []
-    finally:
-        ctx.close()
+            ok, orders = _safe_query(
+                "order_list_query (recent)",
+                ctx.order_list_query,
+                trd_env=trd_env,
+                start=start_str,
+                end=end_str,
+                **common_kwargs,
+            )
+            result["recent_orders"] = (
+                _df_to_records(orders, ORDER_KEY_FIELDS) if ok else []
+            )
+
+            ok, deals = _safe_query(
+                "deal_list_query",
+                ctx.deal_list_query,
+                trd_env=trd_env,
+                **common_kwargs,
+            )
+            result["recent_deals"] = (
+                _df_to_records(deals, DEAL_KEY_FIELDS) if ok else []
+            )
+        finally:
+            ctx.close()
 
     if args.json:
         print(json.dumps(result, indent=2, default=str, ensure_ascii=False))
