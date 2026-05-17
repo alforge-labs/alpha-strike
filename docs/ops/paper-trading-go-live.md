@@ -5,13 +5,13 @@ alpha-strike を **moomoo SIMULATE 口座でのペーパートレード本格運
 > **対象環境**: VM `oracle-strike` (`alpha-strike-01`) / Oracle Cloud Always Free / E2.1.Micro
 > **公開 URL**: `https://strike.alforgelabs.com/webhook`
 > **broker**: moomoo SIMULATE（米国株中心、香港株も可）
-> **想定利用者**: 個人運用、TradingView Premium プランから 1 戦略を流す段階
+> **想定利用者**: 個人運用、TradingView Essential プラン以上から 1 戦略を流す段階
 
 ---
 
 ## 0. 事前準備
 
-- [ ] TradingView Premium 以上のアカウントを保有している
+- [ ] TradingView Essential 以上のアカウントを保有している（Webhook 機能必須）
 - [ ] moomoo SIMULATE 口座が有効（`scripts/show_simulate_status.py` で総資産が取得できる）
 - [ ] 1Password の `AlphaTrade` vault に `alpha-strike` アイテムがあり、`WEBHOOK_PASSPHRASE` / `MOOMOO_LOGIN_ACCOUNT` 等が登録済み
 
