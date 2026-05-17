@@ -163,14 +163,29 @@ def _df_to_records(df, key_fields: list[str] | None = None) -> list[dict]:
     return df.to_dict(orient="records")
 
 
-def _safe_query(label: str, fn, *args, **kwargs) -> tuple[bool, object]:
-    """OpenD クエリを呼び出し、ret/data を返す。失敗時はメッセージ付き。"""
+def _safe_query(
+    label: str,
+    fn,
+    *args,
+    warnings_sink: list[str] | None = None,
+    quiet: bool = False,
+    **kwargs,
+) -> tuple[bool, object]:
+    """OpenD クエリを呼び出し、ret/data を返す。
+
+    失敗時のメッセージは:
+      - warnings_sink が渡されていればそこに append (JSON 出力に含める用)
+      - quiet=False のときは sys.stderr にも `[WARN] ...` 形式で表示
+    JSON 出力時に stderr WARN が ssh/pipe 経由で stdout と混ざらないよう、
+    呼び出し側で `quiet=args.json` を渡す。
+    """
     ret, data = fn(*args, **kwargs)
     if ret != RET_OK:
-        print(
-            f"[WARN] {label} 失敗: {data}",
-            file=sys.stderr,
-        )
+        msg = f"{label} 失敗: {data}"
+        if warnings_sink is not None:
+            warnings_sink.append(msg)
+        if not quiet:
+            print(f"[WARN] {msg}", file=sys.stderr)
         return False, data
     return True, data
 
@@ -207,6 +222,9 @@ def main() -> int:
     ctx = OpenSecTradeContext(
         filter_trdmarket=market, host=args.host, port=args.port
     )
+    # warnings は JSON 出力にも含めるため result に集約。
+    # JSON モード時は stderr への WARN を抑制 (ssh/pipe で stdout と混ざる罠を避ける)。
+    warnings: list[str] = []
     result: dict = {
         "meta": {
             "market": args.market,
@@ -214,14 +232,21 @@ def main() -> int:
             "days": args.days,
             "start": start_str,
             "end": end_str,
-        }
+        },
+        "warnings": warnings,
     }
+    common_kwargs = {"warnings_sink": warnings, "quiet": args.json}
     try:
-        ok, info = _safe_query("accinfo_query", ctx.accinfo_query, trd_env=trd_env)
+        ok, info = _safe_query(
+            "accinfo_query", ctx.accinfo_query, trd_env=trd_env, **common_kwargs
+        )
         result["accinfo"] = _df_to_records(info, ACCINFO_KEY_FIELDS) if ok else []
 
         ok, pos = _safe_query(
-            "position_list_query", ctx.position_list_query, trd_env=trd_env
+            "position_list_query",
+            ctx.position_list_query,
+            trd_env=trd_env,
+            **common_kwargs,
         )
         result["positions"] = _df_to_records(pos, POSITION_KEY_FIELDS) if ok else []
 
@@ -230,6 +255,7 @@ def main() -> int:
             ctx.order_list_query,
             trd_env=trd_env,
             status_filter_list=PENDING_STATUSES,
+            **common_kwargs,
         )
         result["pending_orders"] = (
             _df_to_records(pending, ORDER_KEY_FIELDS) if ok else []
@@ -241,13 +267,17 @@ def main() -> int:
             trd_env=trd_env,
             start=start_str,
             end=end_str,
+            **common_kwargs,
         )
         result["recent_orders"] = (
             _df_to_records(orders, ORDER_KEY_FIELDS) if ok else []
         )
 
         ok, deals = _safe_query(
-            "deal_list_query", ctx.deal_list_query, trd_env=trd_env
+            "deal_list_query",
+            ctx.deal_list_query,
+            trd_env=trd_env,
+            **common_kwargs,
         )
         result["recent_deals"] = _df_to_records(deals, DEAL_KEY_FIELDS) if ok else []
     finally:
@@ -284,6 +314,12 @@ def main() -> int:
 
     _print_section_header(f"直近の約定履歴 ({len(result['recent_deals'])} 件)")
     _print_records(result["recent_deals"], "(なし)")
+
+    # 警告（API が一部 reject されたケース、例: SIMULATE での deal_list_query）
+    if warnings:
+        _print_section_header(f"警告 ({len(warnings)} 件)")
+        for w in warnings:
+            print(f"  {w}")
 
     return 0
 
