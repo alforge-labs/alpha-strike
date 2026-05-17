@@ -181,7 +181,20 @@ if short_signal
 
 ---
 
-## 6. E2E 疎通テスト（手動 curl）
+## 6. E2E 疎通テスト
+
+### 6-1. 一括スモークテスト（推奨）
+
+`scripts/go_live_smoke.sh` で `/health` → `/webhook 401` → `/webhook 200 (実発注)` → 着弾確認 → 取消 を一気通貫で実行できる：
+
+```bash
+# Mac から (1Password CLI 認証済み + ssh oracle-strike 疎通済みが前提)
+./scripts/go_live_smoke.sh             # 各段で y/n 確認
+./scripts/go_live_smoke.sh --yes       # 全段を自動実行
+./scripts/go_live_smoke.sh --dry-run   # 401 確認まで（実発注なし）
+```
+
+### 6-2. 手動 curl
 
 VM のサービスが起動した状態で、Mac から外部疎通を確認：
 

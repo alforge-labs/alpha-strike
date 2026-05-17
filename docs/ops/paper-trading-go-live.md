@@ -92,16 +92,17 @@ curl -i -X POST https://strike.alforgelabs.com/webhook \
 
 ### 2-3. /webhook 発注テスト（passphrase 正、SIMULATE 1 株）
 
+**推奨**: `scripts/go_live_smoke.sh` で一括実行（health → 401 → 200 → 着弾確認 → 取消 を対話的に進める）
+
 ```bash
-WEBHOOK_PASSPHRASE=$(op item get "alpha-strike" --vault AlphaTrade --fields WEBHOOK_PASSPHRASE --reveal)
-curl -X POST https://strike.alforgelabs.com/webhook \
-  -H "Content-Type: application/json" \
-  -d "{\"passphrase\":\"$WEBHOOK_PASSPHRASE\",\"broker\":\"moomoo\",\"asset_class\":\"US\",\"action\":\"buy\",\"ticker\":\"US.AAPL\",\"quantity\":1,\"run_mode\":\"paper\",\"strategy_id\":\"go_live_smoke\"}"
+./scripts/go_live_smoke.sh             # 各段で y/n 確認
+./scripts/go_live_smoke.sh --dry-run   # 401 確認まで（実発注なし）
 ```
 
-- [ ] レスポンス `status=success`、`broker_order_id` が返る
-- [ ] VM 側で `scripts/show_simulate_status.py` を実行し、発注が `recent_orders` に出現
-- [ ] 必要に応じて `scripts/cleanup_simulate_orders.py` で取消
+- [ ] スクリプトが `✅ go-live スモークテスト完了` で終了
+- [ ] レスポンス `status=success`、`broker_order_id` が返った
+- [ ] `show_simulate_status` の出力に `recent_orders` の該当発注が出現
+- [ ] テスト発注が `cleanup_simulate_orders` で取り消された
 
 ### 2-4. event_logger JSONL 出力
 
