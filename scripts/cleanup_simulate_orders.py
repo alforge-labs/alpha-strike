@@ -50,6 +50,7 @@ import sys
 from moomoo import (  # type: ignore[import-not-found]
     ModifyOrderOp,
     OpenSecTradeContext,
+    OrderStatus,
     RET_OK,
     TrdEnv,
     TrdMarket,
@@ -59,6 +60,16 @@ _MARKET_MAP = {
     "US": TrdMarket.US,
     "HK": TrdMarket.HK,
 }
+
+# cleanup 対象: broker 未送信 or pending 状態の注文。
+# FILLED_ALL / CANCELLED_* / DELETED / FAILED / DISABLED 等は履歴扱いなので除外する。
+# order_list_query にこのリストを渡すと moomoo 側でフィルタされる。
+PENDING_STATUSES = [
+    OrderStatus.WAITING_SUBMIT,
+    OrderStatus.SUBMITTING,
+    OrderStatus.SUBMITTED,
+    OrderStatus.FILLED_PART,
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -152,7 +163,10 @@ def main() -> int:
         filter_trdmarket=market, host=args.host, port=args.port
     )
     try:
-        ret, orders = ctx.order_list_query(trd_env=trd_env)
+        # 履歴 (CANCELLED_ALL / FILLED_ALL 等) を除外するため status_filter_list を指定。
+        ret, orders = ctx.order_list_query(
+            trd_env=trd_env, status_filter_list=PENDING_STATUSES
+        )
         if ret != RET_OK:
             print(f"[ERROR] order_list_query failed: {orders}", file=sys.stderr)
             return 2
@@ -193,8 +207,11 @@ def main() -> int:
             f"\n=== 結果: 成功 {success_count} 件 / 失敗 {failure_count} 件 ==="
         )
 
-        # 確認のための再クエリ
-        ret, orders_after = ctx.order_list_query(trd_env=trd_env)
+        # 確認のための再クエリ。moomoo SDK の CANCEL/DELETE 反映は数秒非同期な
+        # ことがあるので、ここでも pending フィルタで誤判定を避ける。
+        ret, orders_after = ctx.order_list_query(
+            trd_env=trd_env, status_filter_list=PENDING_STATUSES
+        )
         if ret == RET_OK:
             remaining = 0 if orders_after is None else len(orders_after)
             if remaining == 0:
