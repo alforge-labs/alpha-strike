@@ -41,6 +41,7 @@ import contextlib
 import json
 import os
 import sys
+import time
 from datetime import datetime, timedelta
 
 from moomoo import (  # type: ignore[import-not-found]
@@ -324,6 +325,12 @@ def main() -> int:
             )
         finally:
             ctx.close()
+            # moomoo SDK の close は非同期で on_disconnect コールバックが
+            # 走り、内部ロガーが stdout に追加で書き込む。with を抜けて
+            # stdout を復元する前にコールバック完了を待つ必要がある。
+            # 0.5 秒は実測で十分（ローカル loopback の TCP close 経路）。
+            if args.json:
+                time.sleep(0.5)
 
     if args.json:
         print(json.dumps(result, indent=2, default=str, ensure_ascii=False))
