@@ -43,9 +43,9 @@ dev = [
 requires-dist = [
     { name = "backtrader", specifier = ">=1.9.78.123" },
     { name = "fastapi", specifier = ">=0.135.2" },
-    { name = "futu-api", specifier = ">=10.1.6108" },
+    { name = "futu-api", specifier = ">=10.5.6508" },
     { name = "matplotlib", specifier = ">=3.10.8" },
-    { name = "moomoo-api", specifier = ">=10.1.6108" },
+    { name = "moomoo-api", specifier = ">=10.5.6508" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "requests", specifier = ">=2.32.5" },
     { name = "slowapi", specifier = ">=0.1.9" },
@@ -475,7 +475,7 @@ wheels = [
 
 [[package]]
 name = "futu-api"
-version = "10.1.6108"
+version = "10.5.6508"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pandas" },
@@ -483,7 +483,7 @@ dependencies = [
     { name = "pycryptodome" },
     { name = "simplejson" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/bb/88/7ae98060683a862004dfe8783b226086fc0015bc63fafdcaea13f5b9e6cb/futu_api-10.1.6108.tar.gz", hash = "sha256:27c5e1d6a703fde4dea449396b46661c8cc91e1cafb63b3d985ce414748191f6", size = 4917071, upload-time = "2026-03-19T12:00:52.863Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/db/13/16d44389e9ea44e12a7315109294eb22c828754b74f6851b0324b4903e83/futu_api-10.5.6508.tar.gz", hash = "sha256:12df53ce098fb410a4d9a7fdbdee87a9fef5049b06456f13cf87c3f45d28e028", size = 6197593, upload-time = "2026-05-07T10:32:43.372Z" }
 
 [[package]]
 name = "h11"
@@ -758,7 +758,7 @@ wheels = [
 
 [[package]]
 name = "moomoo-api"
-version = "10.1.6108"
+version = "10.5.6508"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pandas" },
@@ -766,7 +766,7 @@ dependencies = [
     { name = "pycryptodome" },
     { name = "simplejson" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/f6/af/78c0e8b4bfa53242ea6e8b9b4cd1c3e811bf4e835aed5487f47d79d4ab93/moomoo_api-10.1.6108.tar.gz", hash = "sha256:8f120020fdb149aad8467a3c92391e30025f75e3fce14eb2a4371fa10ee06584", size = 4918965, upload-time = "2026-03-19T12:03:16.182Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/26/57/252af3eef59527e7c902bd7e6c56a454b9e91d130596906536d8b264e821/moomoo_api-10.5.6508.tar.gz", hash = "sha256:5524055d43bad5e041db6c4c590ba65ffad5ac8a7a175efe475973f0fff0b9a7", size = 6197766, upload-time = "2026-05-07T10:32:59.605Z" }
 
 [[package]]
 name = "numpy"

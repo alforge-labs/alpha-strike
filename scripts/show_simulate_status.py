@@ -16,7 +16,7 @@ VM 側で実行する想定:
     .venv/bin/python scripts/show_simulate_status.py --json | jq .
 
 オプション:
-    --market {US,HK}              対象市場 (デフォルト US)
+    --market {US,HK,CRYPTO}       対象市場 (デフォルト US)
     --trd-env {SIMULATE,REAL}     取引環境 (デフォルト SIMULATE)
     --host HOST                   OpenD ホスト (デフォルト 127.0.0.1)
     --port PORT                   OpenD ポート (デフォルト 11111)
@@ -80,6 +80,7 @@ def _suppress_stdout():
 _MARKET_MAP = {
     "US": TrdMarket.US,
     "HK": TrdMarket.HK,
+    "CRYPTO": TrdMarket.CRYPTO,
 }
 
 PENDING_STATUSES = [

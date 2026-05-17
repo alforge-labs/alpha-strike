@@ -7,9 +7,9 @@ requires-python = ">=3.12"
 dependencies = [
     "backtrader>=1.9.78.123",
     "fastapi>=0.135.2",
-    "futu-api>=10.1.6108",
+    "futu-api>=10.5.6508",
     "matplotlib>=3.10.8",
-    "moomoo-api>=10.1.6108",
+    "moomoo-api>=10.5.6508",
     "python-dotenv>=1.2.2",
     "requests>=2.32.5",
     "slowapi>=0.1.9",

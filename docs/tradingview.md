@@ -93,7 +93,27 @@ WAF Custom Rule が Free plan の枠を超える場合や、より柔軟なロ�
 }
 ```
 
-> **moomoo の銘柄コードは `市場.コード` 形式**。米国株: `US.AAPL`、香港株: `HK.00700`、中国 A 株: `SH.600000`。TradingView の `{{ticker}}` は `AAPL` 形式なので、Pine 側で `"US." + syminfo.ticker` のように加工する（後述）。
+> **moomoo の銘柄コードは `市場.コード` 形式**。米国株: `US.AAPL`、香港株: `HK.00700`、中国 A 株: `SH.600000`、暗号資産: `CC.BTC` / `CC.ETH` / `CC.XRP`。TradingView の `{{ticker}}` は `AAPL` 形式なので、Pine 側で `"US." + syminfo.ticker` のように加工する（後述）。
+
+**暗号資産（CRYPTO）を成行買い**
+
+```json
+{
+  "passphrase": "<WEBHOOK_PASSPHRASE>",
+  "broker": "moomoo",
+  "asset_class": "CRYPTO",
+  "action": "buy",
+  "ticker": "CC.BTC",
+  "quantity": 0.01,
+  "run_mode": "paper",
+  "strategy_id": "btc_ema_sma_trail40_v1"
+}
+```
+
+> **暗号資産の前提**:
+> - moomoo の crypto は 24/7 取引・unlimited T+0（米国居住者制限あり、`run_mode=paper` でも broker 側のアカウント有効化が前提）
+> - SDK 内部では `OpenSecTradeContext(filter_trdmarket=TrdMarket.CRYPTO, security_firm=SecurityFirm.NONE)` を使用（`handlers/moomoo_handler.py` 参照）
+> - 銘柄コード: `CC.BTC`, `CC.ETH`, `CC.XRP` 等（米国大文字 + `CC.` プレフィックス）
 
 ### 4-2. OANDA PRACTICE（FX デモ口座）
 
@@ -152,10 +172,19 @@ long_signal  = ta.crossover(rsi_val,  30)
 short_signal = ta.crossunder(rsi_val, 70)
 
 // === JSON 生成ヘルパー ===
-make_payload(string action, int qty) =>
-    ticker_full = (asset_class == "US" or asset_class == "HK")
-                   ? asset_class + "." + syminfo.ticker
-                   : syminfo.ticker
+// asset_class が US / HK / CRYPTO のときは market prefix を付けて moomoo フォーマットに揃える
+//   US     → "US.AAPL"
+//   HK     → "HK.00700"
+//   CRYPTO → "CC.BTC"
+get_market_prefix(string ac) =>
+    ac == "US"     ? "US." :
+    ac == "HK"     ? "HK." :
+    ac == "CRYPTO" ? "CC." :
+                     ""
+
+make_payload(string action, float qty) =>
+    prefix = get_market_prefix(asset_class)
+    ticker_full = prefix + syminfo.ticker
     '{"passphrase":"' + passphrase + '",' +
     '"broker":"' + broker + '",' +
     '"asset_class":"' + asset_class + '",' +
