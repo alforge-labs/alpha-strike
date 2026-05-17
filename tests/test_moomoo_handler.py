@@ -43,30 +43,66 @@ def _mock_ctx(
 
 
 # --- _get_trade_context のテスト ---
+# 10.5.6508 以降は OpenUSTradeContext / OpenHKTradeContext が廃止され
+# OpenSecTradeContext + filter_trdmarket=TrdMarket.<MARKET> に統一された。
 
 class TestGetTradeContext:
-    def test_hk_returns_hk_context(self):
-        with patch("futu.OpenHKTradeContext") as mock_hk:
+    def test_hk_returns_sec_context_with_hk_market(self):
+        with patch("futu.OpenSecTradeContext") as mock_sec:
             _get_trade_context("HK", "127.0.0.1", 11111)
-            mock_hk.assert_called_once_with(host="127.0.0.1", port=11111)
+            mock_sec.assert_called_once_with(
+                filter_trdmarket=futu.TrdMarket.HK,
+                host="127.0.0.1",
+                port=11111,
+                security_firm=futu.SecurityFirm.NONE,
+            )
 
-    def test_us_returns_us_context(self):
-        with patch("futu.OpenUSTradeContext") as mock_us:
+    def test_us_returns_sec_context_with_us_market(self):
+        with patch("futu.OpenSecTradeContext") as mock_sec:
             _get_trade_context("US", "127.0.0.1", 11111)
-            mock_us.assert_called_once_with(host="127.0.0.1", port=11111)
+            mock_sec.assert_called_once_with(
+                filter_trdmarket=futu.TrdMarket.US,
+                host="127.0.0.1",
+                port=11111,
+                security_firm=futu.SecurityFirm.NONE,
+            )
 
-    def test_index_returns_us_context(self):
-        with patch("futu.OpenUSTradeContext") as mock_us:
+    def test_index_falls_back_to_us_market(self):
+        """INDEX (NAS100 等) は US 同等の Context を使う既存挙動を維持する。"""
+        with patch("futu.OpenSecTradeContext") as mock_sec:
             _get_trade_context("INDEX", "127.0.0.1", 11111)
-            mock_us.assert_called_once()
+            mock_sec.assert_called_once_with(
+                filter_trdmarket=futu.TrdMarket.US,
+                host="127.0.0.1",
+                port=11111,
+                security_firm=futu.SecurityFirm.NONE,
+            )
 
     def test_hk_case_insensitive(self):
-        with patch("futu.OpenHKTradeContext") as mock_hk:
+        with patch("futu.OpenSecTradeContext") as mock_sec:
             _get_trade_context("hk", "127.0.0.1", 11111)
-            mock_hk.assert_called_once()
+            mock_sec.assert_called_once()
+            assert mock_sec.call_args.kwargs["filter_trdmarket"] == futu.TrdMarket.HK
+
+    def test_crypto_returns_sec_context_with_crypto_market(self):
+        """CRYPTO は filter_trdmarket=TrdMarket.CRYPTO で OpenSecTradeContext を生成。"""
+        with patch("futu.OpenSecTradeContext") as mock_sec:
+            _get_trade_context("CRYPTO", "127.0.0.1", 11111)
+            mock_sec.assert_called_once_with(
+                filter_trdmarket=futu.TrdMarket.CRYPTO,
+                host="127.0.0.1",
+                port=11111,
+                security_firm=futu.SecurityFirm.NONE,
+            )
+
+    def test_crypto_case_insensitive(self):
+        with patch("futu.OpenSecTradeContext") as mock_sec:
+            _get_trade_context("crypto", "127.0.0.1", 11111)
+            mock_sec.assert_called_once()
+            assert mock_sec.call_args.kwargs["filter_trdmarket"] == futu.TrdMarket.CRYPTO
 
 
-# --- moomoo_order_handler のテスト ---
+# --- MoomooHandler のテスト ---
 
 class TestMoomooOrderHandler:
     def test_futu_not_available_raises_import_error(self):
@@ -124,13 +160,29 @@ class TestMoomooOrderHandler:
                 with pytest.raises(RuntimeError, match="moomoo注文エラー"):
                     MoomooHandler().execute(_make_payload())
 
-    def test_hk_asset_class_uses_hk_context(self, monkeypatch):
+    def test_hk_asset_class_uses_hk_market(self, monkeypatch):
         monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
         ctx = _mock_ctx()
         with patch("socket.create_connection"):
-            with patch("futu.OpenHKTradeContext", return_value=ctx) as mock_hk:
+            with patch("futu.OpenSecTradeContext", return_value=ctx) as mock_sec:
                 MoomooHandler().execute(_make_payload(asset_class="HK", ticker="HK.00700"))
-            mock_hk.assert_called_once()
+            assert mock_sec.call_args.kwargs["filter_trdmarket"] == futu.TrdMarket.HK
+
+    def test_crypto_asset_class_uses_crypto_market(self, monkeypatch):
+        """CRYPTO + CC.BTC を payload で送ると filter_trdmarket=CRYPTO で発注される。"""
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+        ctx = _mock_ctx(order_id="crypto-1", dealt_qty=0.01, dealt_avg_price=68000.0)
+        with patch("socket.create_connection"):
+            with patch("futu.OpenSecTradeContext", return_value=ctx) as mock_sec:
+                result = MoomooHandler().execute(
+                    _make_payload(asset_class="CRYPTO", ticker="CC.BTC", quantity=0.01)
+                )
+            assert mock_sec.call_args.kwargs["filter_trdmarket"] == futu.TrdMarket.CRYPTO
+            assert mock_sec.call_args.kwargs["security_firm"] == futu.SecurityFirm.NONE
+        call_kwargs = ctx.place_order.call_args.kwargs
+        assert call_kwargs["code"] == "CC.BTC"
+        assert call_kwargs["qty"] == 0.01
+        assert result["order_id"] == "crypto-1"
 
     def test_real_env_uses_real_trd_env(self, monkeypatch):
         monkeypatch.setenv("MOOMOO_TRD_ENV", "REAL")

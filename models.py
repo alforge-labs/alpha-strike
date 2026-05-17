@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 class WebhookPayload(BaseModel):
     passphrase: str = Field(repr=False)
     broker: Literal["oanda", "moomoo"]
-    asset_class: Literal["FX", "COMMODITY", "US", "HK", "INDEX"]
+    asset_class: Literal["FX", "COMMODITY", "US", "HK", "INDEX", "CRYPTO"]
     action: Literal["buy", "sell"]
     ticker: str = Field(
         pattern=r"^[A-Z0-9_.]{1,20}$",
@@ -82,7 +82,7 @@ class SignalEvent(BaseModel):
     signal_id: str
     occurred_at: datetime
     broker: Literal["oanda", "moomoo"]
-    asset_class: Literal["FX", "COMMODITY", "US", "HK", "INDEX"]
+    asset_class: Literal["FX", "COMMODITY", "US", "HK", "INDEX", "CRYPTO"]
     action: Literal["buy", "sell"]
     ticker: str
     quantity: float
@@ -102,7 +102,7 @@ class OrderEvent(BaseModel):
     order_id: str
     occurred_at: datetime
     broker: Literal["oanda", "moomoo"]
-    asset_class: Literal["FX", "COMMODITY", "US", "HK", "INDEX"]
+    asset_class: Literal["FX", "COMMODITY", "US", "HK", "INDEX", "CRYPTO"]
     action: Literal["buy", "sell"]
     ticker: str
     quantity: float
@@ -124,7 +124,7 @@ class FillEvent(BaseModel):
     fill_id: str
     occurred_at: datetime
     broker: Literal["oanda", "moomoo"]
-    asset_class: Literal["FX", "COMMODITY", "US", "HK", "INDEX"]
+    asset_class: Literal["FX", "COMMODITY", "US", "HK", "INDEX", "CRYPTO"]
     action: Literal["buy", "sell"]
     ticker: str
     quantity: float
@@ -148,7 +148,7 @@ class TradeClosedEvent(BaseModel):
     occurred_at: datetime
     closed_at: datetime
     broker: Literal["oanda", "moomoo"]
-    asset_class: Literal["FX", "COMMODITY", "US", "HK", "INDEX"]
+    asset_class: Literal["FX", "COMMODITY", "US", "HK", "INDEX", "CRYPTO"]
     action: Literal["buy", "sell"]
     ticker: str
     quantity: float
@@ -170,7 +170,7 @@ class TradeClosedPayload(BaseModel):
     trade_id: str
     closed_at: datetime
     broker: Literal["oanda", "moomoo"]
-    asset_class: Literal["FX", "COMMODITY", "US", "HK", "INDEX"]
+    asset_class: Literal["FX", "COMMODITY", "US", "HK", "INDEX", "CRYPTO"]
     action: Literal["buy", "sell"]
     ticker: str
     quantity: float = Field(gt=0)

@@ -9,7 +9,7 @@ OpenD を先に起動してからサーバーを起動してください。
 import logging
 import os
 import socket
-from typing import TYPE_CHECKING, Union
+from typing import TYPE_CHECKING
 
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
@@ -43,18 +43,39 @@ def _check_opend_connection(host: str, port: int) -> None:
         pass  # 接続確認のみ。コンテキスト終了時に自動クローズ
 
 
+_MARKET_MAP: "dict[str, str]" = {
+    "HK": "HK",
+    "CRYPTO": "CRYPTO",
+}
+
+
 def _get_trade_context(
     asset_class: str,
     host: str,
     port: int,
-) -> "Union[futu.OpenUSTradeContext, futu.OpenHKTradeContext]":
-    """asset_class に基づいてトレードコンテキストを返す。
+) -> "futu.OpenSecTradeContext":
+    """asset_class に基づいて統一トレードコンテキスト OpenSecTradeContext を返す。
 
-    対応: "HK" → OpenHKTradeContext, その他（"US"等）→ OpenUSTradeContext
+    futu/moomoo SDK 10.5.6508 以降は OpenUSTradeContext / OpenHKTradeContext が
+    廃止され、OpenSecTradeContext + filter_trdmarket に統一された。
+
+    対応:
+      - "HK"     → filter_trdmarket=TrdMarket.HK
+      - "CRYPTO" → filter_trdmarket=TrdMarket.CRYPTO
+      - その他   → filter_trdmarket=TrdMarket.US (US / INDEX / COMMODITY / FX）
+
+    security_firm はすべての市場で SecurityFirm.NONE をデフォルト指定する。
+    REAL 取引で broker 固有の firm が必要な場合は呼び出し側で上書きする。
     """
-    if asset_class.upper() == "HK":
-        return futu.OpenHKTradeContext(host=host, port=port)
-    return futu.OpenUSTradeContext(host=host, port=port)
+    ac = asset_class.upper()
+    market_name = _MARKET_MAP.get(ac, "US")
+    market = getattr(futu.TrdMarket, market_name)
+    return futu.OpenSecTradeContext(
+        filter_trdmarket=market,
+        host=host,
+        port=port,
+        security_firm=futu.SecurityFirm.NONE,
+    )
 
 
 class MoomooHandler:
