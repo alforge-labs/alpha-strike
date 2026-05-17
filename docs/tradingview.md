@@ -1,170 +1,262 @@
 # TradingView アラート設定ガイド
 
-## Webhook URL の設定
+本ドキュメントは alpha-strike の Webhook サーバーを **TradingView Premium 以上のアラート機能** から呼び出すための設定手順をまとめたものです。
 
-TradingView のアラート作成画面で以下を設定します。
+> **前提**: VM (`oracle-strike` = `alpha-strike-01`) が [VM プロビジョニング手順書](./ops/vm-provisioning.md) の §0〜§9 まで完了し、`https://strike.alforgelabs.com` で Cloudflare Tunnel 経由の公開 URL が稼働していること。OANDA / moomoo の認証情報も `/etc/alpha-strike/.env` に投入済みであること。
 
-- **Webhook URL**: `http://<サーバーのIPまたはドメイン>:8080/webhook`
-  - ローカルテストには ngrok などのトンネリングツールが必要です
-  - 例: `https://xxxx.ngrok-free.app/webhook`
+---
 
-## アラートメッセージ（JSON Body）
+## 1. Webhook URL
 
-アラートの「Message」欄に以下のJSON形式で入力してください。
+| 項目 | 値 |
+|---|---|
+| URL | `https://strike.alforgelabs.com/webhook` |
+| 経路 | TradingView → Cloudflare Edge → cloudflared (VM) → `localhost:8080` |
+| 認証 | リクエストボディ内 `passphrase` フィールド（`/etc/alpha-strike/.env` の `WEBHOOK_PASSPHRASE` と一致） |
+| Rate limit | `10 req/min/IP`（`slowapi` で実装、`webhook_server.py:97`） |
 
-### OANDA証券への発注
+> **TradingView が HTTPS を要求**: TradingView のアラート機能は HTTPS のみ。`http://` は受理されない。Cloudflare Tunnel が自動で証明書を提供するため、別途証明書管理は不要。
 
-**買い注文（FX: USD/JPY）**
-```json
-{
-  "passphrase": "your-secret-passphrase",
-  "broker": "oanda",
-  "asset_class": "FX",
-  "action": "buy",
-  "ticker": "USDJPY",
-  "quantity": 1000
-}
-```
+---
 
-**売り注文（米国株CFD: Apple）**
-```json
-{
-  "passphrase": "your-secret-passphrase",
-  "broker": "oanda",
-  "asset_class": "US",
-  "action": "sell",
-  "ticker": "AAPL",
-  "quantity": 1
-}
-```
+## 2. Cloudflare Access の設定（重要）
 
-**買い注文（指数CFD: NASDAQ100）**
-```json
-{
-  "passphrase": "your-secret-passphrase",
-  "broker": "oanda",
-  "asset_class": "INDEX",
-  "action": "buy",
-  "ticker": "NAS100",
-  "quantity": 1
-}
-```
+TradingView の送信元 IP は固定 4 つが公開されている。`strike.alforgelabs.com` には **Cloudflare Access の認証ポリシーを設定しない**（= 公開エンドポイント）。代わりに以下のいずれかでアクセスを絞る。
 
-**買い注文（商品CFD: 金）**
-```json
-{
-  "passphrase": "your-secret-passphrase",
-  "broker": "oanda",
-  "asset_class": "COMMODITY",
-  "action": "buy",
-  "ticker": "XAUUSD",
-  "quantity": 1
-}
-```
+### 2-A. Cloudflare WAF の Custom Rule（推奨）
 
-> **OANDA instrument 変換ルール**: `asset_class` に応じて TradingView ティッカーを自動変換します。
+Cloudflare ダッシュボード → **Security → WAF → Custom rules** で以下を作成：
+
+| 項目 | 値 |
+|---|---|
+| Rule name | `Allow TradingView to /webhook` |
+| If incoming requests match | `(http.host eq "strike.alforgelabs.com" and http.request.uri.path eq "/webhook" and not ip.src in {52.89.214.238 34.212.75.30 54.218.53.128 52.32.178.7})` |
+| Then take action | `Block` |
+
+> **TradingView 公式の送信元 IP**: 上記 4 つは [TradingView 公式 Help Center](https://www.tradingview.com/support/solutions/43000529348-about-webhooks/) で公開されている値。変更時はこのページで再確認すること。
 >
-> | asset_class | TradingView 例 | OANDA instrument |
-> |---|---|---|
-> | `FX` / `COMMODITY` | `USDJPY` | `USD_JPY` |
-> | `US` / `INDEX` | `AAPL` | `AAPL_USD` |
-> | その他 | `USD_JPY` | そのまま使用 |
->
-> OANDA instrument を直接指定したい場合は、`asset_class` に上記以外の値（例: `"RAW"`）を指定するとパススルーされます。
+> **passphrase との二重防御**: WAF で IP を絞っても、リクエストボディの `passphrase` 検証は必須。万一 TradingView の IP が変更されたときに即時遮断を解除できるよう、`passphrase` を強い秘密値（32+ 文字のランダム文字列）に設定しておく。
 
-### moomoo証券への発注
+### 2-B. Cloudflare Access の Service Token（代替）
 
-**買い注文（米国株: Apple）**
+WAF Custom Rule が Free plan の枠を超える場合や、より柔軟なログを取りたい場合は Access Application + Service Token 方式も使える。ただし TradingView の Webhook はカスタムヘッダー送信に対応していないため、**通常は 2-A を選択**。
+
+---
+
+## 3. TradingView アラートの作成手順
+
+1. TradingView のチャート画面で対象銘柄を表示
+2. 右サイドメニューから **Alert（時計+ベル アイコン）** → **Create Alert**
+3. **Condition** で Pine Script のストラテジー（`alert()` 関数 / `strategy.entry()` を含むもの）を選択
+4. **Notifications** タブで **Webhook URL** にチェック → URL に `https://strike.alforgelabs.com/webhook` を入力
+5. **Message** 欄に下記「アラートメッセージ JSON」を貼り付ける
+6. **Create** で保存
+
+> **Premium 以上必須**: TradingView の Webhook URL は **Premium plan 以上** でのみ利用可能。Pro / Pro+ では `alert()` の `message` 欄は使えるが Webhook 配信先は設定不可。
+
+---
+
+## 4. アラートメッセージ JSON
+
+`WebhookPayload` のスキーマ定義は [`models.py`](../models.py) を参照。
+
+### 4-1. moomoo SIMULATE（ペーパートレード）
+
+**米国株を成行買い**
+
 ```json
 {
-  "passphrase": "your-secret-passphrase",
+  "passphrase": "<WEBHOOK_PASSPHRASE>",
   "broker": "moomoo",
   "asset_class": "US",
   "action": "buy",
   "ticker": "US.AAPL",
-  "quantity": 10
+  "quantity": 10,
+  "run_mode": "paper",
+  "strategy_id": "demo_buy_v1",
+  "alert_name": "{{strategy.order.alert_message}}"
 }
 ```
 
-**売り注文（香港株: テンセント）**
+**香港株を成行売り**
+
 ```json
 {
-  "passphrase": "your-secret-passphrase",
+  "passphrase": "<WEBHOOK_PASSPHRASE>",
   "broker": "moomoo",
   "asset_class": "HK",
   "action": "sell",
   "ticker": "HK.00700",
-  "quantity": 100
+  "quantity": 100,
+  "run_mode": "paper",
+  "strategy_id": "demo_sell_v1"
 }
 ```
 
-> **注意**: moomoo（Futu）の銘柄コードは `市場.コード` 形式です。
-> 米国株: `US.AAPL`、香港株: `HK.00700`、中国A株: `SH.600000` など。
+> **moomoo の銘柄コードは `市場.コード` 形式**。米国株: `US.AAPL`、香港株: `HK.00700`、中国 A 株: `SH.600000`。TradingView の `{{ticker}}` は `AAPL` 形式なので、Pine 側で `"US." + syminfo.ticker` のように加工する（後述）。
 
-## ローカルテスト用 curl コマンド
+### 4-2. OANDA PRACTICE（FX デモ口座）
 
-サーバーが `localhost:8080` で起動している場合、以下でテストできます。
+**USD/JPY 1000 通貨買い**
 
-**認証テスト（401を確認）**
-```bash
-curl -X POST http://localhost:8080/webhook \
-  -H "Content-Type: application/json" \
-  -d '{
-    "passphrase": "wrong-passphrase",
-    "broker": "oanda",
-    "asset_class": "FX",
-    "action": "buy",
-    "ticker": "USDJPY",
-    "quantity": 1000
-  }'
+```json
+{
+  "passphrase": "<WEBHOOK_PASSPHRASE>",
+  "broker": "oanda",
+  "asset_class": "FX",
+  "action": "buy",
+  "ticker": "USDJPY",
+  "quantity": 1000,
+  "run_mode": "paper",
+  "strategy_id": "fx_demo_v1"
+}
 ```
 
-**OANDA証券テスト（PRACTICE口座）**
-```bash
-curl -X POST http://localhost:8080/webhook \
-  -H "Content-Type: application/json" \
-  -d '{
-    "passphrase": "your-secret-passphrase",
-    "broker": "oanda",
-    "asset_class": "FX",
-    "action": "buy",
-    "ticker": "USDJPY",
-    "quantity": 1000
-  }'
+> **OANDA instrument 自動変換**: `asset_class` が `FX` / `COMMODITY` のときは `USDJPY` → `USD_JPY`、`US` / `INDEX` のときは `AAPL` → `AAPL_USD` に自動変換される。変換ロジックは `services/order_service.py` を参照。
+
+### 4-3. 動的フィールド（TradingView プレースホルダ）
+
+TradingView は `{{...}}` 形式のプレースホルダをアラート発火時に自動で埋め込む。代表例：
+
+| プレースホルダ | 内容 | 用途 |
+|---|---|---|
+| `{{ticker}}` | 銘柄（例: `AAPL`） | `ticker` フィールドに展開 |
+| `{{strategy.order.action}}` | `buy` / `sell` | `action` フィールドに展開 |
+| `{{strategy.order.contracts}}` | 注文数量 | `quantity` フィールドに展開 |
+| `{{strategy.position_size}}` | ポジションサイズ | 補助情報 |
+| `{{strategy.order.alert_message}}` | Pine 側で `alert()` に渡した文字列 | `alert_name` などに展開 |
+| `{{time}}` | アラート発火時刻（UTC ISO） | `alert_timestamp` に展開 |
+
+> **JSON 内に直接埋め込めない**: TradingView のプレースホルダは数値や引用符を含むため、JSON の構造を壊さないように **文字列フィールドのみで使う** のが安全。`quantity` のような数値型に `{{strategy.order.contracts}}` を入れると、TradingView 側の出力次第で 422 になることがある。確実に動的化したい場合は Pine 側で完全な JSON を組み立てて `alert()` の引数に渡す（§5 参照）。
+
+---
+
+## 5. Pine Script から完全な JSON を生成する
+
+Pine v6 で alpha-strike Webhook 用 JSON を組み立てる最小テンプレート：
+
+```pinescript
+//@version=6
+strategy("alpha-strike webhook demo", overlay=true)
+
+// === 設定値 ===
+passphrase   = "<WEBHOOK_PASSPHRASE>"   // Pine の input.string() で隠す運用も検討
+broker       = "moomoo"                 // "oanda" | "moomoo"
+asset_class  = "US"
+strategy_id  = "demo_buy_v1"
+run_mode     = "paper"
+
+// === シグナル例: RSI クロス ===
+rsi_val = ta.rsi(close, 14)
+long_signal  = ta.crossover(rsi_val,  30)
+short_signal = ta.crossunder(rsi_val, 70)
+
+// === JSON 生成ヘルパー ===
+make_payload(string action, int qty) =>
+    ticker_full = (asset_class == "US" or asset_class == "HK")
+                   ? asset_class + "." + syminfo.ticker
+                   : syminfo.ticker
+    '{"passphrase":"' + passphrase + '",' +
+    '"broker":"' + broker + '",' +
+    '"asset_class":"' + asset_class + '",' +
+    '"action":"' + action + '",' +
+    '"ticker":"' + ticker_full + '",' +
+    '"quantity":' + str.tostring(qty) + ',' +
+    '"strategy_id":"' + strategy_id + '",' +
+    '"run_mode":"' + run_mode + '"}'
+
+// === 発注 + アラート ===
+if long_signal
+    strategy.entry("LONG", strategy.long, qty = 10)
+    alert(make_payload("buy", 10), alert.freq_once_per_bar_close)
+
+if short_signal
+    strategy.close("LONG")
+    alert(make_payload("sell", 10), alert.freq_once_per_bar_close)
 ```
 
-**moomoo証券テスト（SIMULATEデモ口座）**
+> **`alert()` をストラテジー本体で発火** すると、TradingView アラートの **Message 欄を空にしたまま** `alert()` で組み立てた JSON がそのまま Webhook へ送られる。
+>
+> **`alert.freq_once_per_bar_close`** を使うと足確定時のみ発火し、リペイント・重複発注を抑制できる。
+
+---
+
+## 6. E2E 疎通テスト（手動 curl）
+
+VM のサービスが起動した状態で、Mac から外部疎通を確認：
+
 ```bash
-curl -X POST http://localhost:8080/webhook \
+# 1. 認証失敗（passphrase 不一致 → 401）
+curl -i -X POST https://strike.alforgelabs.com/webhook \
   -H "Content-Type: application/json" \
   -d '{
-    "passphrase": "your-secret-passphrase",
+    "passphrase": "WRONG",
     "broker": "moomoo",
     "asset_class": "US",
     "action": "buy",
     "ticker": "US.AAPL",
-    "quantity": 10
+    "quantity": 1,
+    "run_mode": "paper"
   }'
+
+# 2. 認証成功（moomoo SIMULATE へ実発注 → 200 + order_id 返却）
+WEBHOOK_PASSPHRASE=$(op item get "alpha-strike" --vault AlphaTrade --fields WEBHOOK_PASSPHRASE --reveal)
+curl -i -X POST https://strike.alforgelabs.com/webhook \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"passphrase\": \"$WEBHOOK_PASSPHRASE\",
+    \"broker\": \"moomoo\",
+    \"asset_class\": \"US\",
+    \"action\": \"buy\",
+    \"ticker\": \"US.AAPL\",
+    \"quantity\": 1,
+    \"run_mode\": \"paper\",
+    \"strategy_id\": \"e2e_smoke\"
+  }"
 ```
 
-## よくあるエラーと対処法
+レスポンス例（成功時）：
 
-| HTTPステータス | 原因 | 対処法 |
-|---|---|---|
-| 401 Unauthorized | passphrase が一致しない | `.env` の `WEBHOOK_PASSPHRASE` とJSONの `passphrase` を確認 |
-| 422 Unprocessable Entity | JSONフォーマットが不正 | `broker`/`action` の値を確認（小文字のみ） |
-| 500 Internal Server Error | APIキーなど設定が未設定 | `.env` の各証券会社の設定を確認 |
-| 502 Bad Gateway | 注文API呼び出し失敗 | ネットワーク・OpenD起動状態・API残高を確認 |
+```json
+{
+  "status": "success",
+  "broker": "moomoo",
+  "ticker": "US.AAPL",
+  "message": "{'order_id': 12345678}",
+  "signal_id": "sig_xxxxxxxxxxxxxxxxxxxx",
+  "order_id": "ord_xxxxxxxxxxxxxxxxxxxx",
+  "broker_order_id": "12345678",
+  "event_id": "evt_xxxxxxxxxxxxxxxxxxxx"
+}
+```
 
-## TradingView から外部URLへの接続
-
-TradingView は HTTPS のみサポートしています。
-ローカルサーバーへの接続には ngrok を使用してください。
+発注確認は VM 側で：
 
 ```bash
-# ngrok で 8080 ポートをトンネル
-ngrok http 8080
-# → https://xxxx.ngrok-free.app が発行される
+ssh oracle-strike
+cd ~/dev/alpha-strike
+.venv/bin/python scripts/show_simulate_status.py
 ```
 
-本番環境では SSL証明書を設定したリバースプロキシ（nginx など）の使用を推奨します。
+---
+
+## 7. よくあるエラーと対処
+
+| HTTPステータス | 原因 | 対処 |
+|---|---|---|
+| 401 Unauthorized | `passphrase` 不一致 | `/etc/alpha-strike/.env` の `WEBHOOK_PASSPHRASE` と TradingView Message 欄の値を再確認 |
+| 422 Unprocessable Entity | JSON パース失敗 / Field validation 失敗 | `broker` `action` `run_mode` の値は小文字、`ticker` は `^[A-Z0-9_.]{1,20}$`、`quantity` は正数 |
+| 429 Too Many Requests | `slowapi` の rate limit (10/min/IP) 超過 | アラート頻度を抑える、または `webhook_server.py:97` の上限を見直す |
+| 500 Internal Server Error | broker 認証情報未設定 | `journalctl -u alpha-strike -n 100 --no-pager` でエラー詳細を確認 |
+| 502 Bad Gateway | broker API 呼び出し失敗 | `moomoo`: OpenD が起動しているか (`systemctl status moomoo-opend`)、`oanda`: API key の有効性 |
+| 502 Bad Gateway（Cloudflare） | alpha-strike が落ちている | `systemctl status alpha-strike`、`journalctl -u alpha-strike` |
+| 403 Forbidden（Cloudflare） | WAF Custom Rule で遮断 | 送信元 IP が `52.89.214.238 / 34.212.75.30 / 54.218.53.128 / 52.32.178.7` のいずれかか確認 |
+
+---
+
+## 8. 関連ドキュメント
+
+- [VM プロビジョニング手順書](./ops/vm-provisioning.md) — Cloudflare Tunnel・SSH Access・OS セットアップ
+- [Webhook ペイロード v2 仕様](./webhook-payload-v2.md) — `WebhookPayload` の詳細フィールド
+- [moomoo OpenD セットアップ](./moomoo_futud.md) — OpenD CLI のインストールとデバイストークン認証
+- [本格運用チェックリスト](./ops/paper-trading-go-live.md) — ペーパートレード本番運用の事前確認項目
