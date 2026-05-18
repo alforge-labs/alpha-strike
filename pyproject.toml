@@ -1,9 +1,27 @@
 [project]
 name = "alpha-strike"
 version = "0.1.0"
-description = "Add your description here"
+description = "Self-hosted webhook bridge from TradingView alerts to moomoo / OANDA brokers, with Cloudflare Tunnel + WAF reference architecture."
 readme = "README.md"
 requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+keywords = ["tradingview", "webhook", "moomoo", "oanda", "fastapi", "paper-trading", "algotrading"]
+authors = [
+    { name = "alforge-labs", email = "yoshiaki@sakae.org" },
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
 dependencies = [
     "backtrader>=1.9.78.123",
     "fastapi>=0.135.2",
@@ -16,6 +34,13 @@ dependencies = [
     "tenacity>=9.1.4",
     "uvicorn[standard]>=0.42.0",
 ]
+
+[project.urls]
+Homepage = "https://alforgelabs.com/"
+Documentation = "https://alforgelabs.com/ja/docs/guides/alpha-strike-setup/"
+Repository = "https://github.com/alforge-labs/alpha-strike"
+Issues = "https://github.com/alforge-labs/alpha-strike/issues"
+Changelog = "https://github.com/alforge-labs/alpha-strike/blob/main/CHANGELOG.md"
 
 [dependency-groups]
 dev = [
