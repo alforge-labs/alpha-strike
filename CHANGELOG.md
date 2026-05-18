@@ -3,6 +3,30 @@
 AlphaForge の全バージョン変更履歴です。
 
 
+## [0.4.0] - 2026-05-18
+
+
+### その他
+
+- バージョン 0.4.0 にバンプ
+
+
+
+### ドキュメント
+
+- CHANGELOG を v0.3.0 に更新
+
+
+
+### 新機能
+
+- **safety**: kill switch (maintenance mode) を実装 (#50)
+
+
+- **safety**: idempotency (signal_id 重複拒否) を実装 (#51)
+
+
+
 ## [0.3.0] - 2026-05-18
 
 
