@@ -186,11 +186,32 @@ ssh oracle-strike "sudo journalctl -u moomoo-opend -n 50 --no-pager | grep -iE '
 
 | 症状 | 一次対応 |
 |---|---|
+| **異常発注の検知（最緊急）** | **kill switch**: `echo "理由" \| sudo tee /etc/alpha-strike/MAINTENANCE` で即時 503 化（restart 不要、service は活かしたまま）→ `cleanup_simulate_orders.py` で取消 → 原因究明後に `sudo rm /etc/alpha-strike/MAINTENANCE` で復旧 |
 | Webhook 502 連発 | `systemctl status alpha-strike moomoo-opend`、必要なら `systemctl restart alpha-strike` |
 | OpenD 接続切れ | `systemctl restart moomoo-opend`、デバイストークン期限切れなら Mac で再認証 → rsync |
-| 異常発注の検知 | TradingView アラートを **Pause** → `cleanup_simulate_orders.py` で取消 → 原因調査 |
 | 自宅 IP 経由で SSH 不可 | DNS キャッシュ問題（[vm-provisioning.md §11](./vm-provisioning.md)）か Cloudflare Access PIN メール再取得 |
 | ディスク逼迫 | `events/*.jsonl` の古い分を `gzip` してアーカイブ、必要に応じて `journald` の保持期間短縮 |
+
+#### Kill switch（受付停止モード）の詳細
+
+異常発注を検知した際の **第一手** として、サービスを止めずに新規発注のみ拒否できる kill switch を使う。Webhook → 503 を返すことで TradingView 側の retry も止まる（持続的な 5xx は自動 disable される）。
+
+| 起動方法 | 切替 | 用途 |
+|---|---|---|
+| ファイルフラグ `/etc/alpha-strike/MAINTENANCE` | restart 不要・即時 | **緊急時の主要手段**。ファイル内容が 503 detail に含まれるので TradingView 側のエラーログに理由を残せる |
+| 環境変数 `MAINTENANCE_MODE=1` | `.env` 編集 + restart | 計画停止時など、systemd 起動時から固定したい場合 |
+
+```bash
+# 停止
+echo "ticker AAPL runaway: investigating" | sudo tee /etc/alpha-strike/MAINTENANCE
+# /webhook が即時 503 を返すようになる
+curl -i https://strike.alforgelabs.com/webhook  # → 503
+
+# 解除
+sudo rm /etc/alpha-strike/MAINTENANCE
+```
+
+> **重要**: maintenance mode 中も `/health` は 200 を返す（外部ヘルスチェック / Cloudflare Tunnel 維持のため）。`passphrase` 検証より **前** に kill switch が判定されるので、maintenance 中の passphrase 試行はログに残らない。
 
 ### 5-4. 中止判断
 

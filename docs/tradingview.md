@@ -289,6 +289,7 @@ cd ~/dev/alpha-strike
 | 401 Unauthorized | `passphrase` 不一致 | `/etc/alpha-strike/.env` の `WEBHOOK_PASSPHRASE` と TradingView Message 欄の値を再確認 |
 | 422 Unprocessable Entity | JSON パース失敗 / Field validation 失敗 | `broker` `action` `run_mode` の値は小文字、`ticker` は `^[A-Z0-9_.]{1,20}$`、`quantity` は正数 |
 | 429 Too Many Requests | `slowapi` の rate limit (10/min/IP) 超過 | アラート頻度を抑える、または `webhook_server.py:97` の上限を見直す |
+| **503 Service Unavailable** | **Kill switch (maintenance mode) が ON** | サーバー側で `/etc/alpha-strike/MAINTENANCE` ファイルが存在する、もしくは `MAINTENANCE_MODE=1` が設定されている。`sudo rm /etc/alpha-strike/MAINTENANCE` で解除（[paper-trading-go-live.md §5-3](./ops/paper-trading-go-live.md) 参照） |
 | 500 Internal Server Error | broker 認証情報未設定 | `journalctl -u alpha-strike -n 100 --no-pager` でエラー詳細を確認 |
 | 502 Bad Gateway | broker API 呼び出し失敗 | `moomoo`: OpenD が起動しているか (`systemctl status moomoo-opend`)、`oanda`: API key の有効性 |
 | 502 Bad Gateway（Cloudflare） | alpha-strike が落ちている | `systemctl status alpha-strike`、`journalctl -u alpha-strike` |
