@@ -1,10 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+# futu / moomoo SDK 10.5.6508 以降は VERSION.txt や .proto 等の data ファイルを
+# import 時に参照するため、明示的にバンドルする必要がある。
+futu_datas = collect_data_files('futu', include_py_files=False)
+moomoo_datas = collect_data_files('moomoo', include_py_files=False)
+futu_submodules = collect_submodules('futu')
+moomoo_submodules = collect_submodules('moomoo')
+
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[*futu_datas, *moomoo_datas],
     hiddenimports=[
         'uvicorn',
         'uvicorn.logging',
@@ -23,8 +32,8 @@ a = Analysis(
         'slowapi',
         'tenacity',
         'dotenv',
-        'futu',
-        'moomoo',
+        *futu_submodules,
+        *moomoo_submodules,
     ],
     hookspath=[],
     hooksconfig={},
