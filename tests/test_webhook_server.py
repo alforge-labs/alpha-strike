@@ -5,10 +5,10 @@ import json
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-from event_logger import JsonlEventLogger
-from services.fill_service import FillEventService
-from services.order_service import build_default_router
-from webhook_server import app
+from alpha_strike.event_logger import JsonlEventLogger
+from alpha_strike.services.fill_service import FillEventService
+from alpha_strike.services.order_service import build_default_router
+from alpha_strike.webhook_server import app
 
 
 @pytest.fixture
@@ -112,7 +112,7 @@ async def test_oanda_handler_called_for_oanda_broker(client, monkeypatch):
     monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account")
     monkeypatch.setenv("OANDA_ENV", "PRACTICE")
 
-    with patch("handlers.oanda_handler.requests.post", return_value=mock_response):
+    with patch("alpha_strike.handlers.oanda_handler.requests.post", return_value=mock_response):
         response = await client.post("/webhook", json=BASE_PAYLOAD)
 
     assert response.status_code == 200
@@ -145,7 +145,7 @@ async def test_error_detail_does_not_leak_internals(client, monkeypatch):
     monkeypatch.setenv("OANDA_ACCOUNT_ID", "acc")
     monkeypatch.setenv("OANDA_ENV", "PRACTICE")
 
-    with patch("handlers.oanda_handler.requests.post", side_effect=req_lib.ConnectionError("internal host detail")):
+    with patch("alpha_strike.handlers.oanda_handler.requests.post", side_effect=req_lib.ConnectionError("internal host detail")):
         response = await client.post("/webhook", json=BASE_PAYLOAD)
 
     assert response.status_code == 502
@@ -163,7 +163,7 @@ async def test_moomoo_handler_called_for_moomoo_broker(client):
         "ticker": "US.AAPL",
         "quantity": 10,
     }
-    with patch("handlers.moomoo_handler.MoomooHandler.execute", return_value={"order_id": "42", "ret_code": 0}):
+    with patch("alpha_strike.handlers.moomoo_handler.MoomooHandler.execute", return_value={"order_id": "42", "ret_code": 0}):
         response = await client.post("/webhook", json=moomoo_payload)
 
     assert response.status_code == 200
@@ -191,7 +191,7 @@ async def test_payload_accepts_live_tracking_metadata(client, monkeypatch, tmp_p
         "alert_name": "SMA Long",
     }
 
-    with patch("handlers.oanda_handler.requests.post") as mock_post:
+    with patch("alpha_strike.handlers.oanda_handler.requests.post") as mock_post:
         mock_post.return_value.json.return_value = {"orderCreateTransaction": {"id": "42"}}
         mock_post.return_value.raise_for_status.return_value = None
         response = await client.post("/webhook", json=payload)
@@ -211,7 +211,7 @@ async def test_webhook_writes_signal_and_order_events(client, monkeypatch, tmp_p
     monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account")
     monkeypatch.setenv("OANDA_ENV", "PRACTICE")
 
-    with patch("handlers.oanda_handler.requests.post") as mock_post:
+    with patch("alpha_strike.handlers.oanda_handler.requests.post") as mock_post:
         mock_post.return_value.json.return_value = {
             "orderCreateTransaction": {"id": "42"},
             "orderFillTransaction": {"id": "314", "units": "1000", "price": "149.235"},
@@ -293,7 +293,7 @@ async def test_moomoo_opposite_fill_emits_trade_closed(client, monkeypatch, tmp_
         {"order_id": "43", "ret_code": 0, "fill_id": "fill_sell_001", "filled_qty": 10, "filled_price": 110.0},
     ]
 
-    with patch("handlers.moomoo_handler.MoomooHandler.execute", side_effect=side_effect):
+    with patch("alpha_strike.handlers.moomoo_handler.MoomooHandler.execute", side_effect=side_effect):
         buy_response = await client.post("/webhook", json=buy_payload)
         sell_response = await client.post("/webhook", json=sell_payload)
 
@@ -319,7 +319,7 @@ async def test_moomoo_opposite_fill_emits_trade_closed(client, monkeypatch, tmp_
 @pytest.mark.anyio
 async def test_oanda_opposite_fill_emits_trade_closed(client, monkeypatch, tmp_path):
     from unittest.mock import patch
-    from webhook_server import limiter
+    from alpha_strike.webhook_server import limiter
 
     monkeypatch.setenv("LIVE_EVENTS_PATH", str(tmp_path))
 
@@ -340,7 +340,7 @@ async def test_oanda_opposite_fill_emits_trade_closed(client, monkeypatch, tmp_p
         {"order_id": "43", "fill_id": "fill_sell_001", "filled_qty": 1000, "filled_price": 149.8},
     ]
 
-    with patch("handlers.oanda_handler.OandaHandler.execute", side_effect=side_effect):
+    with patch("alpha_strike.handlers.oanda_handler.OandaHandler.execute", side_effect=side_effect):
         limiter._storage.reset()
         buy_response = await client.post("/webhook", json=buy_payload)
         limiter._storage.reset()
@@ -400,7 +400,7 @@ async def test_moomoo_split_exit_emits_trade_closed_after_final_fill(client, mon
         {"order_id": "44", "ret_code": 0, "fill_id": "fill_sell_012", "filled_qty": 6, "filled_price": 110.0},
     ]
 
-    with patch("handlers.moomoo_handler.MoomooHandler.execute", side_effect=side_effect):
+    with patch("alpha_strike.handlers.moomoo_handler.MoomooHandler.execute", side_effect=side_effect):
         buy_response = await client.post("/webhook", json=buy_payload)
         partial_response = await client.post("/webhook", json=partial_sell_payload)
         final_response = await client.post("/webhook", json=final_sell_payload)
@@ -463,7 +463,7 @@ async def test_moomoo_multi_open_lots_exit_emits_trade_closed_for_each_lot(clien
         {"order_id": "53", "ret_code": 0, "fill_id": "fill_sell_103", "filled_qty": 10, "filled_price": 110.0},
     ]
 
-    with patch("handlers.moomoo_handler.MoomooHandler.execute", side_effect=side_effect):
+    with patch("alpha_strike.handlers.moomoo_handler.MoomooHandler.execute", side_effect=side_effect):
         buy_one_response = await client.post("/webhook", json=buy_one_payload)
         buy_two_response = await client.post("/webhook", json=buy_two_payload)
         sell_response = await client.post("/webhook", json=sell_payload)
@@ -529,7 +529,7 @@ async def test_moomoo_reversal_exit_keeps_residual_fill_as_new_trade(client, mon
         {"order_id": "62", "ret_code": 0, "fill_id": "fill_sell_202", "filled_qty": 15, "filled_price": 110.0},
     ]
 
-    with patch("handlers.moomoo_handler.MoomooHandler.execute", side_effect=side_effect):
+    with patch("alpha_strike.handlers.moomoo_handler.MoomooHandler.execute", side_effect=side_effect):
         buy_response = await client.post("/webhook", json=buy_payload)
         sell_response = await client.post("/webhook", json=sell_payload)
 
@@ -570,7 +570,7 @@ async def test_health_ready_all_ok(client, monkeypatch):
     monkeypatch.setenv("OANDA_API_KEY", "test-key")
     monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account")
 
-    with patch("webhook_server.socket.create_connection"):
+    with patch("alpha_strike.webhook_server.socket.create_connection"):
         response = await client.get("/health/ready")
 
     assert response.status_code == 200
@@ -588,7 +588,7 @@ async def test_health_ready_oanda_missing_env(client, monkeypatch):
     monkeypatch.delenv("OANDA_API_KEY", raising=False)
     monkeypatch.delenv("OANDA_ACCOUNT_ID", raising=False)
 
-    with patch("webhook_server.socket.create_connection"):
+    with patch("alpha_strike.webhook_server.socket.create_connection"):
         response = await client.get("/health/ready")
 
     assert response.status_code == 503
@@ -605,7 +605,7 @@ async def test_health_ready_moomoo_opend_unreachable(client, monkeypatch):
     monkeypatch.setenv("OANDA_API_KEY", "test-key")
     monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account")
 
-    with patch("webhook_server.socket.create_connection", side_effect=OSError("接続拒否")):
+    with patch("alpha_strike.webhook_server.socket.create_connection", side_effect=OSError("接続拒否")):
         response = await client.get("/health/ready")
 
     assert response.status_code == 503

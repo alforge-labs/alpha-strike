@@ -1,9 +1,10 @@
 # alpha-strike
 
+[![PyPI version](https://img.shields.io/pypi/v/alpha-strike.svg)](https://pypi.org/project/alpha-strike/)
 [![CI](https://github.com/alforge-labs/alpha-strike/actions/workflows/ci.yml/badge.svg)](https://github.com/alforge-labs/alpha-strike/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/alforge-labs/alpha-strike/actions/workflows/codeql.yml/badge.svg)](https://github.com/alforge-labs/alpha-strike/actions/workflows/codeql.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/pypi/pyversions/alpha-strike.svg)](https://pypi.org/project/alpha-strike/)
 
 **English** | [日本語](README.md)
 
@@ -41,38 +42,49 @@ alpha-strike (FastAPI, this repo)
 
 ## Quick Start
 
-### Local (fastest)
+### From PyPI (recommended)
 
 ```bash
-git clone https://github.com/alforge-labs/alpha-strike.git
-cd alpha-strike
-uv sync
+# uv (recommended)
+uv add alpha-strike
 
-# Required env
-echo 'WEBHOOK_PASSPHRASE=your-secret-passphrase' > .env
-echo 'MOOMOO_TRD_ENV=SIMULATE' >> .env  # if using moomoo
-echo 'OANDA_ENV=PRACTICE'     >> .env   # if using OANDA
+# Or pipx for a global CLI
+pipx install alpha-strike
 
-# Start
-uv run uvicorn webhook_server:app --host 0.0.0.0 --port 8080
+# Or plain pip into a venv
+pip install alpha-strike
+```
+
+Run:
+
+```bash
+WEBHOOK_PASSPHRASE=your-secret-passphrase alpha-strike
+
+# Custom host / port
+WEBHOOK_PASSPHRASE=your-secret-passphrase alpha-strike --host 127.0.0.1 --port 9000
 
 # Verify
 curl http://localhost:8080/health
 # → {"status":"ok"}
 ```
 
-### Binary distribution (PyInstaller)
-
-Download a single-file binary for your OS (~52 MB) from [GitHub Releases](https://github.com/alforge-labs/alpha-strike/releases).
+### From source (for development)
 
 ```bash
-# macOS / Linux
-chmod +x alpha-strike-macos-arm64
-WEBHOOK_PASSPHRASE=your-secret ./alpha-strike-macos-arm64
+git clone https://github.com/alforge-labs/alpha-strike.git
+cd alpha-strike
+uv sync
 
-# Windows (PowerShell)
-$env:WEBHOOK_PASSPHRASE = "your-secret"
-.\alpha-strike-windows-x86_64.exe
+# Configure .env
+echo 'WEBHOOK_PASSPHRASE=your-secret-passphrase' > .env
+echo 'MOOMOO_TRD_ENV=SIMULATE' >> .env  # if using moomoo
+echo 'OANDA_ENV=PRACTICE'     >> .env   # if using OANDA
+
+# Run via the CLI
+uv run alpha-strike
+
+# Hot-reload (dev)
+uv run alpha-strike --reload
 ```
 
 ### Production: Oracle Cloud + Cloudflare Tunnel
@@ -151,8 +163,9 @@ uv sync
 uv run pytest tests/ -q
 uv run ruff check .
 
-# Local build verification (PyInstaller + /health smoke)
-bash verify-build.sh
+# Build PyPI artifacts locally
+uv build
+# → dist/alpha_strike-X.Y.Z-py3-none-any.whl + .tar.gz
 ```
 
 ## Related Projects

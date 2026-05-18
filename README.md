@@ -1,9 +1,10 @@
 # alpha-strike
 
+[![PyPI version](https://img.shields.io/pypi/v/alpha-strike.svg)](https://pypi.org/project/alpha-strike/)
 [![CI](https://github.com/alforge-labs/alpha-strike/actions/workflows/ci.yml/badge.svg)](https://github.com/alforge-labs/alpha-strike/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/alforge-labs/alpha-strike/actions/workflows/codeql.yml/badge.svg)](https://github.com/alforge-labs/alpha-strike/actions/workflows/codeql.yml)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/pypi/pyversions/alpha-strike.svg)](https://pypi.org/project/alpha-strike/)
 
 [English](README.en.md) | **日本語**
 
@@ -43,36 +44,49 @@ alpha-strike (FastAPI, this repo)
 
 ### ローカルで試す（最短）
 
+### PyPI から（推奨）
+
+```bash
+# uv（推奨）
+uv add alpha-strike
+
+# または pipx でグローバル CLI として
+pipx install alpha-strike
+
+# または venv に直接
+pip install alpha-strike
+```
+
+起動:
+
+```bash
+WEBHOOK_PASSPHRASE=your-secret-passphrase alpha-strike
+
+# ホスト / ポート指定
+WEBHOOK_PASSPHRASE=your-secret-passphrase alpha-strike --host 127.0.0.1 --port 9000
+
+# 疎通確認
+curl http://localhost:8080/health
+# → {"status":"ok"}
+```
+
+### ソースから（開発時）
+
 ```bash
 git clone https://github.com/alforge-labs/alpha-strike.git
 cd alpha-strike
 uv sync
 
-# 必須環境変数を設定
+# .env を設定
 echo 'WEBHOOK_PASSPHRASE=your-secret-passphrase' > .env
 echo 'MOOMOO_TRD_ENV=SIMULATE' >> .env  # moomoo を使う場合
 echo 'OANDA_ENV=PRACTICE'     >> .env   # OANDA を使う場合
 
-# 起動
-uv run uvicorn webhook_server:app --host 0.0.0.0 --port 8080
+# CLI から起動
+uv run alpha-strike
 
-# 別ターミナルから疎通確認
-curl http://localhost:8080/health
-# → {"status":"ok"}
-```
-
-### バイナリ配布版（PyInstaller）
-
-各 OS の単一実行ファイル（約 52 MB）を [GitHub Releases](https://github.com/alforge-labs/alpha-strike/releases) からダウンロードできます。
-
-```bash
-# macOS / Linux
-chmod +x alpha-strike-macos-arm64
-WEBHOOK_PASSPHRASE=your-secret ./alpha-strike-macos-arm64
-
-# Windows (PowerShell)
-$env:WEBHOOK_PASSPHRASE = "your-secret"
-.\alpha-strike-windows-x86_64.exe
+# ホットリロード（開発時）
+uv run alpha-strike --reload
 ```
 
 ### Oracle Cloud + Cloudflare Tunnel で本格運用
@@ -151,8 +165,9 @@ uv sync
 uv run pytest tests/ -q
 uv run ruff check .
 
-# ローカルビルド検証（PyInstaller でバイナリ生成 + /health スモーク）
-bash verify-build.sh
+# PyPI 配布用 wheel / sdist をローカル生成
+uv build
+# → dist/alpha_strike-X.Y.Z-py3-none-any.whl + .tar.gz
 ```
 
 ## 関連プロジェクト

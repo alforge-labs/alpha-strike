@@ -1,12 +1,12 @@
 ---
 name: pre-release
-description: ローカルビルド検証からリリースまでのフローを実行する
+description: PyPI リリース前のローカル検証 → リリース実行
 command: true
 ---
 
 # pre-release コマンド
 
-alpha-strike のリリース前にローカルバイナリを作成・検証し、問題なければリリースする。
+alpha-strike を PyPI に公開する前にローカルで lint / test / build を検証し、問題なければリリースする。
 
 ## 使い方
 
@@ -29,12 +29,16 @@ alpha-strike のリリース前にローカルバイナリを作成・検証し�
 
    未コミットの変更があれば中断してユーザーに確認を求める。
 
-2. **ローカルビルド検証**
+2. **ローカル検証**
 
    ```bash
-   bash verify-build.sh
+   uv sync --all-groups
+   uv run ruff check .
+   uv run pytest -q
+   uv build
    ```
 
+   wheel / sdist が `dist/alpha_strike-*.whl` / `dist/alpha_strike-*.tar.gz` として生成されることを確認。
    失敗した場合は中断してエラー内容をユーザーに報告する。
 
 3. **バージョン確認**
@@ -53,7 +57,11 @@ alpha-strike のリリース前にローカルバイナリを作成・検証し�
    bash release.sh ${PART}
    ```
 
+   `release.sh` がタグを push すると `.github/workflows/release.yml` が走り、
+   PyPI Trusted Publisher 経由で wheel / sdist が PyPI に公開される。
+
 ## 注意
 
 - `release.sh` は `git push --tags` まで実行するため、実行前に必ずユーザーの承認を取ること。
-- `git-cliff` と `bump-my-version` が必要（`uv sync --all-groups` で導入済みのはず）。
+- `git-cliff` と `bump-my-version` が必要（`uv sync --all-groups` で導入済み）。
+- PyPI 公開には事前に PyPI の Trusted Publisher 設定で `alforge-labs/alpha-strike` を登録する必要がある。

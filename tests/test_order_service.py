@@ -3,8 +3,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from models import WebhookPayload
-from services.order_service import OrderRouter, build_default_router
+from alpha_strike.models import WebhookPayload
+from alpha_strike.services.order_service import OrderRouter, build_default_router
 
 
 def _make_payload(**kwargs) -> WebhookPayload:

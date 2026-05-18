@@ -1,7 +1,7 @@
 """ブローカーハンドラーの抽象インターフェース"""
 from typing import Protocol
 
-from models import WebhookPayload
+from alpha_strike.models import WebhookPayload
 
 
 class BrokerHandler(Protocol):

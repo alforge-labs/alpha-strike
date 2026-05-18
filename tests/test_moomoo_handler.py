@@ -7,8 +7,8 @@ import pandas as pd
 import pytest
 
 import futu
-from handlers.moomoo_handler import _get_trade_context, MoomooHandler
-from models import WebhookPayload
+from alpha_strike.handlers.moomoo_handler import _get_trade_context, MoomooHandler
+from alpha_strike.models import WebhookPayload
 
 
 def _make_payload(**kwargs) -> WebhookPayload:
@@ -106,7 +106,7 @@ class TestGetTradeContext:
 
 class TestMoomooOrderHandler:
     def test_futu_not_available_raises_import_error(self):
-        with patch("handlers.moomoo_handler.FUTU_AVAILABLE", False):
+        with patch("alpha_strike.handlers.moomoo_handler.FUTU_AVAILABLE", False):
             with pytest.raises(ImportError, match="futu-api"):
                 MoomooHandler().execute(_make_payload())
 
@@ -133,7 +133,7 @@ class TestMoomooOrderHandler:
         monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
         ctx = _mock_ctx(order_id="99", dealt_qty=10, dealt_avg_price=188.5)
         with patch("socket.create_connection"):
-            with patch("handlers.moomoo_handler._get_trade_context", return_value=ctx):
+            with patch("alpha_strike.handlers.moomoo_handler._get_trade_context", return_value=ctx):
                 result = MoomooHandler().execute(_make_payload(action="buy"))
         assert result["order_id"] == "99"
         assert result["ret_code"] == futu.RET_OK
@@ -144,7 +144,7 @@ class TestMoomooOrderHandler:
         monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
         ctx = _mock_ctx()
         with patch("socket.create_connection"):
-            with patch("handlers.moomoo_handler._get_trade_context", return_value=ctx):
+            with patch("alpha_strike.handlers.moomoo_handler._get_trade_context", return_value=ctx):
                 MoomooHandler().execute(_make_payload(action="sell"))
         call_kwargs = ctx.place_order.call_args.kwargs
         assert call_kwargs["trd_side"] == futu.TrdSide.SELL
@@ -156,7 +156,7 @@ class TestMoomooOrderHandler:
         ctx.__exit__ = MagicMock(return_value=False)
         ctx.place_order.return_value = (-1, "APIエラー")
         with patch("socket.create_connection"):
-            with patch("handlers.moomoo_handler._get_trade_context", return_value=ctx):
+            with patch("alpha_strike.handlers.moomoo_handler._get_trade_context", return_value=ctx):
                 with pytest.raises(RuntimeError, match="moomoo注文エラー"):
                     MoomooHandler().execute(_make_payload())
 
@@ -188,7 +188,7 @@ class TestMoomooOrderHandler:
         monkeypatch.setenv("MOOMOO_TRD_ENV", "REAL")
         ctx = _mock_ctx()
         with patch("socket.create_connection"):
-            with patch("handlers.moomoo_handler._get_trade_context", return_value=ctx):
+            with patch("alpha_strike.handlers.moomoo_handler._get_trade_context", return_value=ctx):
                 MoomooHandler().execute(_make_payload())
         call_kwargs = ctx.place_order.call_args.kwargs
         assert call_kwargs["trd_env"] == futu.TrdEnv.REAL
@@ -202,7 +202,7 @@ class TestMoomooOrderHandler:
         ctx.__exit__ = MagicMock(return_value=False)
         ctx.place_order.return_value = (futu.RET_OK, mock_data)
         with patch("socket.create_connection"):
-            with patch("handlers.moomoo_handler._get_trade_context", return_value=ctx):
+            with patch("alpha_strike.handlers.moomoo_handler._get_trade_context", return_value=ctx):
                 result = MoomooHandler().execute(_make_payload())
         # フォールバックとして文字列全体が返される
         assert "order_id" in result

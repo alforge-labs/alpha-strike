@@ -2,8 +2,11 @@
 
 TradingViewからのアラート（JSON）を受け取り、OANDA証券またはmoomoo証券へ注文をルーティングします。
 
-起動:
-    uv run uvicorn webhook_server:app --host 0.0.0.0 --port 8080 --reload
+起動 (PyPI インストール後):
+    alpha-strike --host 0.0.0.0 --port 8080
+
+開発時 (uvicorn 直接):
+    uv run uvicorn alpha_strike.webhook_server:app --host 0.0.0.0 --port 8080 --reload
 """
 
 import hmac
@@ -23,8 +26,8 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from event_logger import JsonlEventLogger
-from models import (
+from alpha_strike.event_logger import JsonlEventLogger
+from alpha_strike.models import (
     EventIngestResult,
     OrderEvent,
     OrderResult,
@@ -33,8 +36,8 @@ from models import (
     TradeClosedPayload,
     WebhookPayload,
 )
-from services.fill_service import FillEventService, _generate_id
-from services.order_service import OrderRouter, build_default_router
+from alpha_strike.services.fill_service import FillEventService, _generate_id
+from alpha_strike.services.order_service import OrderRouter, build_default_router
 
 load_dotenv()
 
@@ -362,7 +365,7 @@ async def health_ready() -> dict:
     )
 
 
-if __name__ == "__main__":
-    import uvicorn
+if __name__ == "__main__":  # pragma: no cover - python -m alpha_strike.webhook_server 用
+    from alpha_strike.cli import main as _cli_main
 
-    uvicorn.run("webhook_server:app", host="0.0.0.0", port=8080, reload=False)
+    _cli_main()

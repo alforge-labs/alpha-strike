@@ -1,31 +1,63 @@
-"""main.py のエントリポイントテスト"""
-import runpy
-from pathlib import Path
+"""alpha_strike.cli エントリポイントテスト"""
+
 from unittest.mock import patch
 
-from webhook_server import app as webhook_app
+import pytest
 
-ROOT = Path(__file__).parent.parent
-
-
-def test_main_does_not_call_uvicorn_on_import():
-    """インポートだけでは uvicorn.run が呼ばれないことを確認する"""
-    with patch("uvicorn.run") as mock_run:
-        import importlib
-        import sys
-
-        sys.modules.pop("main", None)
-        importlib.import_module("main")
-    mock_run.assert_not_called()
+from alpha_strike import cli
 
 
-def test_main_calls_uvicorn_run_with_correct_args():
-    """__main__ として実行したとき uvicorn.run が正しい引数で呼ばれることを確認する"""
-    with patch("uvicorn.run") as mock_run:
-        runpy.run_path(str(ROOT / "main.py"), run_name="__main__")
+def test_cli_invokes_uvicorn_with_defaults(monkeypatch):
+    """引数なし呼び出しでデフォルトホスト/ポートで起動する"""
+    # 環境変数を未設定にしてデフォルト値の挙動を確認
+    monkeypatch.delenv("ALPHA_STRIKE_HOST", raising=False)
+    monkeypatch.delenv("ALPHA_STRIKE_PORT", raising=False)
+
+    with patch("alpha_strike.cli.uvicorn.run") as mock_run:
+        rc = cli.main([])
+
+    assert rc == 0
     mock_run.assert_called_once_with(
-        webhook_app,
+        "alpha_strike.webhook_server:app",
         host="0.0.0.0",
         port=8080,
         reload=False,
     )
+
+
+def test_cli_respects_command_line_arguments():
+    """--host / --port / --reload が反映される"""
+    with patch("alpha_strike.cli.uvicorn.run") as mock_run:
+        cli.main(["--host", "127.0.0.1", "--port", "9000", "--reload"])
+
+    mock_run.assert_called_once_with(
+        "alpha_strike.webhook_server:app",
+        host="127.0.0.1",
+        port=9000,
+        reload=True,
+    )
+
+
+def test_cli_respects_env_variables(monkeypatch):
+    """ALPHA_STRIKE_HOST / ALPHA_STRIKE_PORT 環境変数が反映される"""
+    monkeypatch.setenv("ALPHA_STRIKE_HOST", "127.0.0.1")
+    monkeypatch.setenv("ALPHA_STRIKE_PORT", "8765")
+
+    with patch("alpha_strike.cli.uvicorn.run") as mock_run:
+        cli.main([])
+
+    mock_run.assert_called_once_with(
+        "alpha_strike.webhook_server:app",
+        host="127.0.0.1",
+        port=8765,
+        reload=False,
+    )
+
+
+def test_cli_version_flag_exits_zero(capsys):
+    """--version で version を表示して exit 0"""
+    with pytest.raises(SystemExit) as exc:
+        cli.main(["--version"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    assert "alpha-strike" in out
