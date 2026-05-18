@@ -6,7 +6,7 @@ import os
 import requests
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from models import WebhookPayload
+from alpha_strike.models import WebhookPayload
 
 logger = logging.getLogger(__name__)
 

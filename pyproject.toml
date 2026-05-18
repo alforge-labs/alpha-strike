@@ -23,10 +23,8 @@ classifiers = [
 ]
 
 dependencies = [
-    "backtrader>=1.9.78.123",
     "fastapi>=0.135.2",
     "futu-api>=10.5.6508",
-    "matplotlib>=3.10.8",
     "moomoo-api>=10.5.6508",
     "python-dotenv>=1.2.2",
     "requests>=2.32.5",
@@ -42,11 +40,20 @@ Repository = "https://github.com/alforge-labs/alpha-strike"
 Issues = "https://github.com/alforge-labs/alpha-strike/issues"
 Changelog = "https://github.com/alforge-labs/alpha-strike/blob/main/CHANGELOG.md"
 
+[project.scripts]
+alpha-strike = "alpha_strike.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/alpha_strike"]
+
 [dependency-groups]
 dev = [
     "bump-my-version>=0.32.0",
     "httpx>=0.28.1",
-    "pyinstaller>=6.20.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",

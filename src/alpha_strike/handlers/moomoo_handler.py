@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
-from models import WebhookPayload
+from alpha_strike.models import WebhookPayload
 
 logger = logging.getLogger(__name__)
 

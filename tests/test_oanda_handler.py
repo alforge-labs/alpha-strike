@@ -4,8 +4,8 @@ import pytest
 import requests
 from unittest.mock import MagicMock, patch
 
-from handlers.oanda_handler import _call_oanda_api, _to_oanda_instrument, OandaHandler
-from models import WebhookPayload
+from alpha_strike.handlers.oanda_handler import _call_oanda_api, _to_oanda_instrument, OandaHandler
+from alpha_strike.models import WebhookPayload
 
 
 # --- _to_oanda_instrument のテスト ---
@@ -86,7 +86,7 @@ class TestOandaOrderHandler:
         }
         mock_response.raise_for_status = MagicMock()
 
-        with patch("handlers.oanda_handler.requests.post", return_value=mock_response) as mock_post:
+        with patch("alpha_strike.handlers.oanda_handler.requests.post", return_value=mock_response) as mock_post:
             result = OandaHandler().execute(_make_payload(action="buy", quantity=1000.0))
 
         assert result["order_id"] == "42"
@@ -106,7 +106,7 @@ class TestOandaOrderHandler:
         mock_response.json.return_value = {"orderCreateTransaction": {"id": "99"}}
         mock_response.raise_for_status = MagicMock()
 
-        with patch("handlers.oanda_handler.requests.post", return_value=mock_response) as mock_post:
+        with patch("alpha_strike.handlers.oanda_handler.requests.post", return_value=mock_response) as mock_post:
             OandaHandler().execute(_make_payload(action="sell", quantity=500.0))
 
         call_kwargs = mock_post.call_args
@@ -121,7 +121,7 @@ class TestOandaOrderHandler:
         mock_response.json.return_value = {"orderCreateTransaction": {"id": "1"}}
         mock_response.raise_for_status = MagicMock()
 
-        with patch("handlers.oanda_handler.requests.post", return_value=mock_response) as mock_post:
+        with patch("alpha_strike.handlers.oanda_handler.requests.post", return_value=mock_response) as mock_post:
             OandaHandler().execute(_make_payload())
 
         url = mock_post.call_args.args[0]
@@ -142,7 +142,7 @@ class TestCallOandaApiRetry:
 
     def test_5xx_error_retries_up_to_3_times(self):
         """5xx エラーは最大3回リトライし、最終的に例外を送出する。"""
-        with patch("handlers.oanda_handler.requests.post") as mock_post, \
+        with patch("alpha_strike.handlers.oanda_handler.requests.post") as mock_post, \
              patch("time.sleep"):  # リトライ待機をスキップ
             mock_post.side_effect = self._make_http_error(503)
             with pytest.raises(requests.HTTPError):
@@ -151,7 +151,7 @@ class TestCallOandaApiRetry:
 
     def test_4xx_error_does_not_retry(self):
         """4xx エラー（クライアントエラー）はリトライせず即座に例外を送出する。"""
-        with patch("handlers.oanda_handler.requests.post") as mock_post:
+        with patch("alpha_strike.handlers.oanda_handler.requests.post") as mock_post:
             mock_post.side_effect = self._make_http_error(401)
             with pytest.raises(requests.HTTPError):
                 _call_oanda_api("http://example.com", {}, {})
@@ -159,7 +159,7 @@ class TestCallOandaApiRetry:
 
     def test_connection_error_retries_up_to_3_times(self):
         """接続エラーは最大3回リトライし、最終的に例外を送出する。"""
-        with patch("handlers.oanda_handler.requests.post") as mock_post, \
+        with patch("alpha_strike.handlers.oanda_handler.requests.post") as mock_post, \
              patch("time.sleep"):
             mock_post.side_effect = requests.ConnectionError("接続失敗")
             with pytest.raises(requests.ConnectionError):
@@ -175,7 +175,7 @@ class TestCallOandaApiRetry:
         mock_success.raise_for_status = MagicMock()
         mock_success.json.return_value = {"orderCreateTransaction": {"id": "99"}}
 
-        with patch("handlers.oanda_handler.requests.post") as mock_post, \
+        with patch("alpha_strike.handlers.oanda_handler.requests.post") as mock_post, \
              patch("time.sleep"):
             mock_post.side_effect = [mock_fail, mock_success]
             result = _call_oanda_api("http://example.com", {}, {})

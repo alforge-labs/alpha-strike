@@ -2,7 +2,7 @@
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from models import FillEvent, TradeClosedEvent, WebhookPayload
+from alpha_strike.models import FillEvent, TradeClosedEvent, WebhookPayload
 
 if TYPE_CHECKING:
     from event_logger import JsonlEventLogger

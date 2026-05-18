@@ -96,13 +96,16 @@ moomoo証券での発注には OpenD のローカル起動が必要です。
 - `git-cliff` がインストールされていること（`brew install git-cliff`）
 - `uv sync --all-groups` で依存関係が最新であること
 
-### ステップ 1: ローカルビルド検証
+### ステップ 1: ローカル検証
 
 ```bash
-bash verify-build.sh
+uv sync --all-groups
+uv run ruff check .
+uv run pytest -q
+uv build
 ```
 
-PyInstaller で `dist/alpha-strike` バイナリを生成し、起動確認を行う。
+`uv build` で `dist/alpha_strike-X.Y.Z-py3-none-any.whl` と `dist/alpha_strike-X.Y.Z.tar.gz` が生成されることを確認する（PyPI publish には sdist + wheel の両方が必要）。
 
 ### ステップ 2: リリース実行
 

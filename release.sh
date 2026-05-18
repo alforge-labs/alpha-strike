@@ -38,5 +38,5 @@ echo "=== リモートへプッシュ ==="
 git push && git push --tags
 
 echo "=== v${NEW_VERSION} リリース完了 ==="
-echo "GitHub Actions がバイナリビルドを開始します:"
-echo "  https://github.com/ysakae/alpha-strike/actions"
+echo "GitHub Actions が PyPI パブリッシュを開始します:"
+echo "  https://github.com/alforge-labs/alpha-strike/actions"

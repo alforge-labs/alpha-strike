@@ -2,8 +2,8 @@
 from datetime import datetime
 from unittest.mock import MagicMock
 
-from models import FillEvent, WebhookPayload
-from services.fill_service import FillEventService
+from alpha_strike.models import FillEvent, WebhookPayload
+from alpha_strike.services.fill_service import FillEventService
 
 
 def _make_payload(**kwargs) -> WebhookPayload:
