@@ -38,6 +38,7 @@ from alpha_strike.models import (
     WebhookPayload,
 )
 from alpha_strike.services.fill_service import FillEventService, _generate_id
+from alpha_strike.services.idempotency import IdempotencyStore
 from alpha_strike.services.order_service import OrderRouter, build_default_router
 
 load_dotenv()
@@ -122,6 +123,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     app.state.order_router = build_default_router()
     app.state.fill_service = FillEventService(event_logger)
+
+    # Idempotency store: signal_id ベースの重複拒否（issue #41）
+    try:
+        ttl = float(os.getenv("IDEMPOTENCY_TTL_SECONDS", "600"))
+    except ValueError:
+        logger.warning("IDEMPOTENCY_TTL_SECONDS が数値ではありません、既定の 600 秒を使用")
+        ttl = 600.0
+    app.state.idempotency = IdempotencyStore(ttl_seconds=ttl)
+    logger.info("idempotency store 初期化 (ttl=%s 秒)", ttl)
+
     logger.info("Alpha-Strike Webhook サーバー起動完了")
     yield
     logger.info("Alpha-Strike Webhook サーバー停止")
@@ -154,6 +165,26 @@ async def receive_webhook(
 
     order_router: OrderRouter = request.app.state.order_router
     fill_service: FillEventService = request.app.state.fill_service
+
+    # Idempotency: payload.signal_id が指定されていれば重複検知（issue #41）。
+    # 同じ signal_id が TTL 内に再到達した場合は broker に流さず 200 を返して
+    # TradingView 側の自動リトライを止める（409 にすると無限リトライの危険）。
+    if payload.signal_id:
+        idem: IdempotencyStore = request.app.state.idempotency
+        if not idem.check_and_record(payload.signal_id):
+            logger.warning(
+                "idempotency: duplicate signal_id rejected (signal_id=%s broker=%s ticker=%s)",
+                payload.signal_id,
+                payload.broker,
+                payload.ticker,
+            )
+            return OrderResult(
+                status="success",
+                broker=payload.broker,
+                ticker=payload.ticker,
+                message="duplicate signal_id — already processed",
+                signal_id=payload.signal_id,
+            )
 
     signal_id = payload.signal_id or _generate_id("sig")
     signal_event = SignalEvent(

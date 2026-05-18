@@ -282,6 +282,62 @@ cd ~/dev/alpha-strike
 
 ---
 
+## 6-bis. Idempotency（重複発注の自動拒否）
+
+TradingView Webhook は **ネットワーク再送・alert 再評価・Restart 連打** などで同一シグナルが複数回到達することがある。alpha-strike は **`signal_id` を idempotency key として使い**、TTL 内に同じ `signal_id` が再到達した場合は broker に流さず 200 を返す（TradingView 側の自動リトライを止めるため、409 にはしない）。
+
+### 動作仕様
+
+| 条件 | 動作 |
+|---|---|
+| `signal_id` 指定あり + 初回到達 | 通常の発注フローを実行 |
+| `signal_id` 指定あり + TTL 内に再到達 | broker 呼び出しスキップ、200 `{"status":"success", "message":"duplicate signal_id — already processed"}` を返す |
+| `signal_id` 指定あり + TTL 経過後の再到達 | 通常の発注フローを実行（TTL 切れで履歴破棄済み） |
+| `signal_id` 未指定 | idempotency 検証スキップ（従来通り、毎回 broker に流れる） |
+
+### 設定
+
+| 環境変数 | 既定 | 説明 |
+|---|---|---|
+| `IDEMPOTENCY_TTL_SECONDS` | `600` | 重複拒否対象とする保持期間（秒）。TradingView 自動リトライ最長間隔をカバーする値。プロセス内 in-memory のため restart 時は履歴破棄される |
+
+### Pine スクリプトから一意な `signal_id` を生成する推奨パターン
+
+bar 確定時刻 + strategy_id + timeframe で **同一バー内の再発火を必ず idempotency で弾ける** 形にする：
+
+```pinescript
+//@version=6
+strategy("idempotent demo", overlay=true)
+
+strategy_id = "demo_buy_v1"
+timeframe   = timeframe.period
+passphrase  = "<WEBHOOK_PASSPHRASE>"
+
+make_signal_id() =>
+    // bar 確定時刻を ISO 風文字列で signal_id に埋め込む
+    strategy_id + "_" + timeframe + "_" + str.format_time(time, "yyyy-MM-dd_HH-mm")
+
+make_payload(string action, float qty) =>
+    sig = make_signal_id()
+    '{"passphrase":"' + passphrase + '",' +
+    '"broker":"moomoo",' +
+    '"asset_class":"US",' +
+    '"action":"' + action + '",' +
+    '"ticker":"US." + syminfo.ticker + '",' +
+    '"quantity":' + str.tostring(qty) + ',' +
+    '"signal_id":"' + sig + '",' +
+    '"strategy_id":"' + strategy_id + '",' +
+    '"run_mode":"paper"}'
+```
+
+> **同一バー内の再発火を防ぐ効果**: 上記パターンで `signal_id` を `<strategy_id>_<timeframe>_<bar_open_time>` 形式にすると、同一バーで複数回 `alert()` 発火しても 2 回目以降は alpha-strike 側で必ず 200 + duplicate 扱いされる。
+
+### `signal_id` が含まれていない場合
+
+`signal_id` フィールドを payload に含めない（または空文字列）と、idempotency 検証はスキップされ alpha-strike 側で `sig_XXXXXX` を自動採番する。後方互換のため、既存の payload はそのまま動作するが、**重複発注リスクを低減したい場合は明示的に `signal_id` を含める** ことを強く推奨。
+
+---
+
 ## 7. よくあるエラーと対処
 
 | HTTPステータス | 原因 | 対処 |
