@@ -1,269 +1,172 @@
-# Alpha-Strike
+# alpha-strike
 
-TradingView のアラートを受け取り、**OANDA証券**または**moomoo証券**へ自動発注する Webhook サーバーです。
+[![CI](https://github.com/alforge-labs/alpha-strike/actions/workflows/ci.yml/badge.svg)](https://github.com/alforge-labs/alpha-strike/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/alforge-labs/alpha-strike/actions/workflows/codeql.yml/badge.svg)](https://github.com/alforge-labs/alpha-strike/actions/workflows/codeql.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.12+-blue.svg)](https://www.python.org/downloads/)
 
-## 概要
+[English](README.en.md) | **日本語**
+
+> **TradingView のアラートを Webhook で受け取り、moomoo / OANDA に自動発注するセルフホスト型ブリッジ**
+
+`alpha-strike` は、TradingView Premium / Essential 以上のアラート機能から Webhook 経由でシグナルを受け取り、リクエストボディに基づいて **moomoo 証券（米国株・香港株・暗号資産）** または **OANDA 証券（FX・CFD）** へ自動発注する FastAPI ベースの Webhook サーバーです。
+
+**Oracle Cloud Always Free + Cloudflare Tunnel + Cloudflare WAF Custom Rule** の構成で、自宅 IP の DHCP 変動に依存せず、月額 0 円でセルフホストできるリファレンス実装も提供しています。
 
 ```
-TradingView アラート
-       ↓ (HTTP POST / JSON)
-  Webhook サーバー (FastAPI)
-       ↓                ↓
-  OANDA REST API    moomoo OpenD
-  (FX・CFD)         (米国株・香港株)
+TradingView Premium / Essential
+       │  HTTPS Webhook
+       ▼
+Cloudflare WAF Custom Rule (TradingView IP allowlist)
+       │
+Cloudflare Tunnel (cloudflared)
+       │  outbound only (NSG Ingress = 0)
+       ▼
+alpha-strike (FastAPI, this repo)
+       │
+       ├──► moomoo OpenD ─► moomoo SIMULATE / REAL (米国株 / 香港株 / 暗号資産)
+       └──► OANDA REST v20 ─► OANDA PRACTICE / LIVE (FX / CFD)
 ```
 
-対応ブローカー:
-- **OANDA証券** — FX・株式CFD・指数CFD・商品CFD（REST API v20）
-- **moomoo証券** — 米国株・香港株（Futu OpenAPI / OpenD）
+## 主な機能
+
+- **TradingView Webhook 受信** — `/webhook` エンドポイントで JSON ペイロードを受理、Pydantic で厳格バリデーション
+- **passphrase 認証** — リクエストボディの `passphrase` を `WEBHOOK_PASSPHRASE` と HMAC 比較
+- **multi-broker ルーティング** — `broker: "moomoo" | "oanda"` で発注先を選択。`asset_class` で `US` / `HK` / `CRYPTO` / `FX` / `COMMODITY` / `INDEX` を切替
+- **Rate limiting** — `slowapi` で `10 req/min/IP` の上限を強制
+- **リトライ + タイムアウト** — `tenacity` で broker API 一時障害に対する自動リトライ（OANDA: 指数バックオフ ×3、moomoo: 固定 2 秒 ×3）
+- **JSONL イベントログ** — `SignalEvent` / `OrderEvent` / `FillEvent` / `TradeClosedEvent` を逐次追記、journal との pnl 突合に利用可
+- **メモリ・サービス監視** — `scripts/check_memory.sh` を cron 登録すれば 5 分毎にメモリ・swap・サービス・OOM を ntfy 通知
+- **本格運用向けデプロイ手順** — `docs/ops/vm-provisioning.md` に Oracle Cloud E2.1.Micro + Cloudflare Tunnel + systemd の完全手順を収録
 
 ## クイックスタート
 
-### 1. 依存パッケージのインストール
+### ローカルで試す（最短）
 
 ```bash
+git clone https://github.com/alforge-labs/alpha-strike.git
+cd alpha-strike
 uv sync
-```
 
-### 2. 環境変数の設定
+# 必須環境変数を設定
+echo 'WEBHOOK_PASSPHRASE=your-secret-passphrase' > .env
+echo 'MOOMOO_TRD_ENV=SIMULATE' >> .env  # moomoo を使う場合
+echo 'OANDA_ENV=PRACTICE'     >> .env   # OANDA を使う場合
 
-```bash
-cp .env.example .env
-```
+# 起動
+uv run uvicorn webhook_server:app --host 0.0.0.0 --port 8080
 
-`.env` を編集して認証情報を設定してください:
-
-| 変数 | 必須 | 説明 |
-|---|---|---|
-| `WEBHOOK_PASSPHRASE` | 必須 | TradingView アラートの認証パスフレーズ |
-| `LIVE_EVENTS_PATH` | 任意 | `SignalEvent` / `OrderEvent` / `FillEvent` の JSONL 保存先 |
-| `OANDA_API_KEY` | OANDA使用時 | Personal Access Token |
-| `OANDA_ACCOUNT_ID` | OANDA使用時 | 口座ID |
-| `OANDA_ENV` | OANDA使用時 | `PRACTICE`（デモ）または `LIVE`（本番）|
-| `MOOMOO_HOST` | moomoo使用時 | OpenD のホスト（デフォルト: `127.0.0.1`）|
-| `MOOMOO_PORT` | moomoo使用時 | OpenD のポート（デフォルト: `11111`）|
-| `MOOMOO_TRD_ENV` | moomoo使用時 | `SIMULATE`（デモ）または `REAL`（本番）|
-
-> **重要**: テスト時は必ず `OANDA_ENV=PRACTICE` / `MOOMOO_TRD_ENV=SIMULATE` を設定してください。
-> live trading analysis を使う場合は `LIVE_EVENTS_PATH` を `alpha-strategies/data/live/events` に向けてください。
-> broker の同期レスポンスから約定価格が取れる場合は `FillEvent` も best-effort で保存されます。
-> 現在は broker poller / callback から `POST /events/trade-closed` を呼ぶことで `TradeClosedEvent` を保存できます。
-> moomoo では、同一 strategy / ticker の opposite-side fill を検出した場合、単一 open trade の split exit に加えて、複数 open lot をまたぐ close でも lot ごとの `TradeClosedEvent` を自動生成できます。
-> OANDA でも、同一 strategy / ticker の opposite-side fill を検出した場合、単純な opposite-fill close に加えて、複数 open lot をまたぐ close を lot ごとに event 化します。
-> opposite fill の数量が既存ポジションを上回る reversal では、クローズ分は `TradeClosedEvent` を出し、残数量は新しい `trade_id` を持つ `FillEvent` として残します。
-
-### 2b. 開発者向け: 1Password CLI を使う場合
-
-`.env` ファイルを作成せずに 1Password から環境変数を直接注入できます。
-
-```bash
-# 1Password CLI のインストール（macOS）
-brew install 1password-cli
-
-# 1Password にサインイン（初回のみ）
-op signin
-
-# 1Password アプリで Vault「AlphaTrade」にアイテム「alpha-strike」を作成し、
-# WEBHOOK_PASSPHRASE / OANDA_API_KEY 等のフィールドを登録する
-
-# op run 経由でサーバーを起動（.env ファイル不要）
-make run
-# または
-make dev   # ホットリロード付き
-```
-
-VPS でのセキュリティ強化（`op` を使わない場合）:
-
-```bash
-chmod 600 .env
-```
-
-### 3. サーバー起動
-
-```bash
-# エンドユーザー向け（.env ファイルを使用）
-uv run python main.py
-# または
-make run-dotenv
-```
-
-### 4. 動作確認
-
-```bash
+# 別ターミナルから疎通確認
 curl http://localhost:8080/health
 # → {"status":"ok"}
 ```
 
-Swagger UI: `http://localhost:8080/docs`
+### バイナリ配布版（PyInstaller）
+
+各 OS の単一実行ファイル（約 52 MB）を [GitHub Releases](https://github.com/alforge-labs/alpha-strike/releases) からダウンロードできます。
+
+```bash
+# macOS / Linux
+chmod +x alpha-strike-macos-arm64
+WEBHOOK_PASSPHRASE=your-secret ./alpha-strike-macos-arm64
+
+# Windows (PowerShell)
+$env:WEBHOOK_PASSPHRASE = "your-secret"
+.\alpha-strike-windows-x86_64.exe
+```
+
+### Oracle Cloud + Cloudflare Tunnel で本格運用
+
+ペーパートレード本格運用までの完全手順は公式ドキュメントを参照：
+
+- 📖 [alpha-strike セットアップガイド](https://alforgelabs.com/ja/docs/guides/alpha-strike-setup/) — VM プロビジョニング・Cloudflare Tunnel・WAF・OpenD・systemd の全手順
+- 📖 [TradingView × alpha-strike Integration](https://alforgelabs.com/ja/docs/guides/tradingview-alpha-strike/) — Webhook ペイロード仕様と Pine v6 テンプレート
+
+## 環境変数
+
+| 変数 | 必須 | 説明 |
+|---|---|---|
+| `WEBHOOK_PASSPHRASE` | ✅ | TradingView アラートの認証用パスフレーズ（32 文字以上のランダム文字列推奨） |
+| `ALPHA_STRIKE_HOST` | — | バインドホスト（既定 `0.0.0.0`） |
+| `ALPHA_STRIKE_PORT` | — | バインドポート（既定 `8080`） |
+| `MOOMOO_HOST` | moomoo 使用時 | OpenD のホスト（既定 `127.0.0.1`） |
+| `MOOMOO_PORT` | moomoo 使用時 | OpenD のポート（既定 `11111`） |
+| `MOOMOO_TRD_ENV` | moomoo 使用時 | `SIMULATE`（デモ）または `REAL`（本番） |
+| `MOOMOO_TRADE_PWD_MD5` | moomoo 使用時 | 取引パスワード MD5 ハッシュ |
+| `OANDA_API_KEY` | OANDA 使用時 | Personal Access Token |
+| `OANDA_ACCOUNT_ID` | OANDA 使用時 | 口座 ID |
+| `OANDA_ENV` | OANDA 使用時 | `PRACTICE`（デモ）または `LIVE`（本番） |
+
+> **重要**: 検証時は必ず `MOOMOO_TRD_ENV=SIMULATE` / `OANDA_ENV=PRACTICE` を使用してください。本番口座での誤発注は本ソフトウェアの責任範囲外です。
 
 ## Webhook ペイロード仕様
 
-`POST /webhook` に以下の JSON を送信します。
+詳細は [docs/tradingview.md](docs/tradingview.md) と [docs/webhook-payload-v2.md](docs/webhook-payload-v2.md) を参照。最小例：
 
 ```json
 {
   "passphrase": "your-secret-passphrase",
-  "broker": "oanda",
-  "asset_class": "FX",
+  "broker": "moomoo",
+  "asset_class": "US",
   "action": "buy",
-  "ticker": "USDJPY",
-  "quantity": 1000
+  "ticker": "US.AAPL",
+  "quantity": 10,
+  "run_mode": "paper",
+  "strategy_id": "demo_buy_v1"
 }
 ```
 
-| フィールド | 型 | 説明 |
+| `asset_class` | broker | ticker 例 |
 |---|---|---|
-| `passphrase` | string | 認証パスフレーズ（`.env` と一致させる）|
-| `broker` | `"oanda"` \| `"moomoo"` | 発注先ブローカー |
-| `asset_class` | string | アセットクラス（下記参照）|
-| `action` | `"buy"` \| `"sell"` | 売買方向 |
-| `ticker` | string | 銘柄コード |
-| `quantity` | number | 注文数量（0より大きい値）|
-
-## Trade Closed Event Ingestion
-
-broker 側の照会や callback からクローズ情報を取り込むために、認証付き endpoint を用意しています。
-
-`POST /events/trade-closed`
-
-```json
-{
-  "passphrase": "your-secret-passphrase",
-  "signal_id": "sig_usdjpy_20260330101500",
-  "trade_id": "trd_20260330101502123456",
-  "closed_at": "2026-03-31T11:05:00+09:00",
-  "broker": "oanda",
-  "asset_class": "FX",
-  "action": "buy",
-  "ticker": "USDJPY",
-  "quantity": 1000,
-  "entry_price": 149.235,
-  "exit_price": 149.910,
-  "gross_pnl": 675.0,
-  "net_pnl": 655.0,
-  "strategy_id": "sma_crossover_v1",
-  "strategy_version": "1.2.0",
-  "snapshot_id": "snap_20260329190300123456",
-  "run_mode": "live",
-  "commission": 20.0,
-  "exit_reason": "signal_exit"
-}
-```
-
-### OANDA の asset_class と ticker 変換
-
-| asset_class | ticker 例 | OANDA instrument |
-|---|---|---|
-| `FX` | `USDJPY` | `USD_JPY` |
-| `COMMODITY` | `XAUUSD` | `XAU_USD` |
-| `US` | `AAPL` | `AAPL_USD` |
-| `INDEX` | `NAS100` | `NAS100_USD` |
-| その他 | `USD_JPY` | そのまま使用 |
-
-### moomoo の asset_class と ticker 形式
-
-| asset_class | ticker 形式 | 例 |
-|---|---|---|
-| `US` | `US.ティッカー` | `US.AAPL` |
-| `HK` | `HK.XXXXX` | `HK.00700` |
-
-## moomoo 証券を使う場合
-
-**OpenD**（ローカルゲートウェイ）の起動が必要です。必ずサーバーより先に起動してください。
-
-詳細は [docs/moomoo_futud.md](docs/moomoo_futud.md) を参照してください。
-
-## TradingView の設定
-
-アラートの「Webhook URL」と「Message」を設定します。詳細は [docs/tradingview.md](docs/tradingview.md) を参照してください。
+| `US` | moomoo / oanda | `US.AAPL` / `AAPL` |
+| `HK` | moomoo | `HK.00700` |
+| `CRYPTO` | moomoo | `CC.BTC` / `CC.ETH` / `CC.XRP` |
+| `FX` | oanda | `USDJPY` |
+| `COMMODITY` | oanda | `XAUUSD` |
+| `INDEX` | oanda | `NAS100` |
 
 ## ドキュメント
 
-| ドキュメント | 内容 |
-|---|---|
-| [docs/setup.md](docs/setup.md) | 詳細なセットアップ手順 |
-| [docs/tradingview.md](docs/tradingview.md) | TradingView アラート設定ガイド |
-| [docs/webhook-payload-v2.md](docs/webhook-payload-v2.md) | live trading analysis 向け payload 拡張案 |
-| [docs/moomoo_futud.md](docs/moomoo_futud.md) | OpenD セットアップガイド |
+- 📖 [公式ドキュメント](https://alforgelabs.com/ja/docs/) — Alforge Labs ドキュメント集約
+- 📖 [alpha-strike セットアップガイド](https://alforgelabs.com/ja/docs/guides/alpha-strike-setup/) — 本格運用までの完全手順
+- 📖 [Webhook ペイロード仕様](docs/tradingview.md) — JSON フィールドの詳細
+- 📖 [VM プロビジョニング手順書](docs/ops/vm-provisioning.md) — Oracle Cloud E2.1.Micro + Cloudflare Tunnel
+- 📖 [ペーパートレード Go-Live チェックリスト](docs/ops/paper-trading-go-live.md) — 本番運用前の確認項目
+- 📖 [moomoo OpenD セットアップ](docs/moomoo_futud.md) — OpenD CLI インストールとデバイストークン認証
 
-## コード構成
+## 開発に参加する
 
-<!-- AUTO-GENERATED -->
-```
-alpha-strike/
-├── webhook_server.py       # FastAPI エントリーポイント（薄い HTTP レイヤー）
-├── models.py               # Pydantic データモデル（WebhookPayload, OrderResult 等）
-├── event_logger.py         # JSONL イベントログ
-├── handlers/               # ブローカーハンドラー（OCP/DIP）
-│   ├── base.py             # BrokerHandler Protocol（抽象インターフェース）
-│   ├── oanda_handler.py    # OandaHandler — OANDA REST API v20
-│   └── moomoo_handler.py   # MoomooHandler — moomoo/Futu OpenAPI
-└── services/               # ビジネスロジックサービス（SRP）
-    ├── order_service.py    # OrderRouter — ブローカーへのルーティング
-    └── fill_service.py     # FillEventService — 約定・損益イベント生成
-```
+- **コントリビューションガイド**: [CONTRIBUTING.md](CONTRIBUTING.md)
+- **セキュリティ報告**: [SECURITY.md](SECURITY.md)
+- **行動規範**: [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)（Contributor Covenant v2.1）
+- **変更履歴**: [CHANGELOG.md](CHANGELOG.md)
 
-新しいブローカーを追加する場合は `handlers/` に `XxxHandler` を実装し、`services/order_service.py` の `build_default_router()` へ登録するだけで、`webhook_server.py` の変更は不要です。
-<!-- /AUTO-GENERATED -->
-
-## 開発
+## 開発環境
 
 ```bash
-# テスト実行
-uv run pytest
+# 依存関係インストール
+uv sync
 
-# カバレッジ付きテスト
-uv run pytest --cov
-
-# Lint
+# テスト + Lint
+uv run pytest tests/ -q
 uv run ruff check .
+
+# ローカルビルド検証（PyInstaller でバイナリ生成 + /health スモーク）
+bash verify-build.sh
 ```
 
-## バイナリ配布版（Python 不要）
+## 関連プロジェクト
 
-Python 環境がない場合は [Releases](https://github.com/ysakae/alpha-strike/releases) からビルド済みバイナリをダウンロードできます。
+- 🌐 [alforgelabs.com](https://alforgelabs.com/) — Alforge Labs 公式サイト
+- 📊 [alpha-visualizer](https://github.com/alforge-labs/alpha-visualizer) — AlphaForge バックテスト結果の Web 可視化ツール（Apache-2.0）
+- 🧪 [AlphaForge](https://alforgelabs.com/ja/docs/) — バックテスト・最適化エンジン（商用ライセンス）
 
-### 使い方
+## 免責事項
 
-1. OS に合ったバイナリをダウンロードする
-   - macOS (Apple Silicon): `alpha-strike-macos-arm64`
-   - Windows: `alpha-strike-windows-x86_64.exe`
-   - Linux: `alpha-strike-linux-x86_64`
+本ソフトウェアは現状のまま（AS IS）提供され、いかなる種類の保証もありません。**自動売買は元本を超える損失を生じる可能性があります**。本ソフトウェアを利用して発生した直接・間接の損害（金銭的損失を含む）について、著作権者およびコントリビューターは一切の責任を負いません。本ソフトウェアの利用は完全に自己責任で行ってください。
 
-2. `.env.example` をコピーして `.env` を作成し、認証情報を設定する
-
-   ```bash
-   cp .env.example .env
-   # .env を編集して WEBHOOK_PASSPHRASE 等を設定する
-   ```
-
-3. バイナリを実行する
-
-   ```bash
-   # macOS / Linux
-   chmod +x alpha-strike-macos-arm64
-   ./alpha-strike-macos-arm64
-
-   # Windows
-   alpha-strike-windows-x86_64.exe
-   ```
-
-4. `http://localhost:8080/webhook` に TradingView アラートを送信する
-
-## 要件
-
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/)
-- OANDA の Practice/Live 口座（OANDA使用時）
-- moomoo の口座 + OpenD（moomoo使用時）
+各 broker の利用規約・取引時間・規制を必ず遵守してください。米国居住者の moomoo crypto 利用には FinCEN MSB 規制が適用される等、規制要件は利用者自身で確認・遵守する責任があります。
 
 ## ライセンス
 
-Copyright (c) 2026 AlForge Labs. All Rights Reserved.
-
-本ソフトウェアはプロプライエタリ（クローズドソース）であり、無断での複製・改変・配布・利用を一切禁止します。
-完全な利用規約はエンドユーザー使用許諾契約（EULA）を参照してください。
-
-- [LICENSE.md](LICENSE.md) — 著作権表示の概要
-- [EULA.md](EULA.md) — 使用許諾契約の完全な条文（リバースエンジニアリング禁止・金融責任免責を含む）
-- オンライン版: https://alforgelabs.com/eula
+[Apache License 2.0](LICENSE) © [alforge-labs](https://github.com/alforge-labs)

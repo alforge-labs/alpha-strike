@@ -1,0 +1,17 @@
+name: alpha-strike CodeQL config
+
+# 既定の `security-and-quality` に加えて `security-extended` も有効化する。
+# `security-extended` は精度の高い高重要度クエリのみだが、デフォルトより
+# 範囲が広い（SQL injection / SSRF / path traversal 等の疑わしい
+# データフローもアラート対象になる）。
+queries:
+  - uses: security-and-quality
+  - uses: security-extended
+
+# 解析対象から除外するパス。
+# - テストフィクスチャ / __pycache__ / dist
+paths-ignore:
+  - "tests/fixtures/**"
+  - "**/__pycache__/**"
+  - "dist/**"
+  - "build/**"
