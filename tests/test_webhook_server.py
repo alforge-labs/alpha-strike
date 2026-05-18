@@ -7,6 +7,7 @@ from httpx import ASGITransport, AsyncClient
 
 from alpha_strike.event_logger import JsonlEventLogger
 from alpha_strike.services.fill_service import FillEventService
+from alpha_strike.services.idempotency import IdempotencyStore
 from alpha_strike.services.order_service import build_default_router
 from alpha_strike.webhook_server import app
 
@@ -22,6 +23,8 @@ async def client(monkeypatch):
     # lifespan を経由せず直接 app.state を初期化する
     app.state.order_router = build_default_router()
     app.state.fill_service = FillEventService(JsonlEventLogger())
+    # idempotency store: 各テストごとに新規（テスト間で signal_id 衝突しないよう）
+    app.state.idempotency = IdempotencyStore(ttl_seconds=600)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
 
@@ -699,3 +702,164 @@ async def test_trade_closed_endpoint_also_returns_503_in_maintenance(client, mon
     monkeypatch.setenv("MAINTENANCE_MODE", "1")
     response = await client.post("/events/trade-closed", json=TRADE_CLOSED_PAYLOAD)
     assert response.status_code == 503
+
+
+# ============================================================
+# Idempotency tests (issue #41)
+# ============================================================
+# signal_id を idempotency key として、同一 signal_id の重複到達を
+# 拒否する。broker への二重発注を防ぐ最終防御層。
+
+
+@pytest.mark.anyio
+async def test_duplicate_signal_id_not_routed_to_broker(client, monkeypatch):
+    """同一 signal_id の 2 回目 POST は broker handler を呼び出さない"""
+    from unittest.mock import patch
+    from alpha_strike.webhook_server import limiter
+
+    limiter._storage.reset()
+    monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+    payload = {
+        **BASE_PAYLOAD,
+        "broker": "moomoo",
+        "asset_class": "US",
+        "ticker": "US.AAPL",
+        "quantity": 1,
+        "signal_id": "sig_dup_test_001",
+    }
+
+    with patch(
+        "alpha_strike.handlers.moomoo_handler.MoomooHandler.execute",
+        return_value={"order_id": "100", "ret_code": 0},
+    ) as mock_exec:
+        first = await client.post("/webhook", json=payload)
+        limiter._storage.reset()
+        second = await client.post("/webhook", json=payload)
+
+    assert first.status_code == 200
+    assert first.json()["status"] == "success"
+    # 2 回目は 200 を返す（TradingView 自動リトライ抑止のため 409 ではない）
+    assert second.status_code == 200
+    # ただし broker handler は 1 回しか呼ばれていない
+    assert mock_exec.call_count == 1
+
+
+@pytest.mark.anyio
+async def test_duplicate_signal_id_message_indicates_duplicate(client, monkeypatch):
+    """重複時のレスポンス message が duplicate を示す"""
+    from unittest.mock import patch
+    from alpha_strike.webhook_server import limiter
+
+    limiter._storage.reset()
+    monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+    payload = {
+        **BASE_PAYLOAD,
+        "broker": "moomoo",
+        "asset_class": "US",
+        "ticker": "US.AAPL",
+        "quantity": 1,
+        "signal_id": "sig_dup_msg_test",
+    }
+
+    with patch(
+        "alpha_strike.handlers.moomoo_handler.MoomooHandler.execute",
+        return_value={"order_id": "200", "ret_code": 0},
+    ):
+        await client.post("/webhook", json=payload)
+        limiter._storage.reset()
+        second = await client.post("/webhook", json=payload)
+
+    body = second.json()
+    assert body["signal_id"] == "sig_dup_msg_test"
+    assert "duplicate" in body["message"].lower()
+
+
+@pytest.mark.anyio
+async def test_payload_without_signal_id_is_not_deduplicated(client, monkeypatch):
+    """signal_id 未指定の payload は idempotency 対象外（後方互換）"""
+    from unittest.mock import patch
+    from alpha_strike.webhook_server import limiter
+
+    limiter._storage.reset()
+    monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+    # signal_id を含まない payload
+    payload = {
+        **BASE_PAYLOAD,
+        "broker": "moomoo",
+        "asset_class": "US",
+        "ticker": "US.AAPL",
+        "quantity": 1,
+    }
+    payload.pop("signal_id", None)
+
+    with patch(
+        "alpha_strike.handlers.moomoo_handler.MoomooHandler.execute",
+        return_value={"order_id": "300", "ret_code": 0},
+    ) as mock_exec:
+        await client.post("/webhook", json=payload)
+        limiter._storage.reset()
+        await client.post("/webhook", json=payload)
+
+    # 2 回とも broker を呼ぶ（signal_id ないので idempotency 効かない）
+    assert mock_exec.call_count == 2
+
+
+@pytest.mark.anyio
+async def test_distinct_signal_ids_both_routed(client, monkeypatch):
+    """異なる signal_id は両方とも broker に流れる"""
+    from unittest.mock import patch
+    from alpha_strike.webhook_server import limiter
+
+    limiter._storage.reset()
+    monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+    base = {
+        **BASE_PAYLOAD,
+        "broker": "moomoo",
+        "asset_class": "US",
+        "ticker": "US.AAPL",
+        "quantity": 1,
+    }
+
+    with patch(
+        "alpha_strike.handlers.moomoo_handler.MoomooHandler.execute",
+        return_value={"order_id": "400", "ret_code": 0},
+    ) as mock_exec:
+        await client.post("/webhook", json={**base, "signal_id": "sig_A"})
+        limiter._storage.reset()
+        await client.post("/webhook", json={**base, "signal_id": "sig_B"})
+
+    assert mock_exec.call_count == 2
+
+
+@pytest.mark.anyio
+async def test_idempotency_ttl_env_variable_respected(client, monkeypatch):
+    """IDEMPOTENCY_TTL_SECONDS=0 を設定すると TTL 即時切れで毎回受理される"""
+    from unittest.mock import patch
+
+    from alpha_strike.services.idempotency import IdempotencyStore
+    from alpha_strike.webhook_server import app, limiter
+
+    limiter._storage.reset()
+    # 直接 store を差し替え（lifespan を介さずテスト容易性のため）
+    app.state.idempotency = IdempotencyStore(ttl_seconds=0.0)
+
+    monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+    payload = {
+        **BASE_PAYLOAD,
+        "broker": "moomoo",
+        "asset_class": "US",
+        "ticker": "US.AAPL",
+        "quantity": 1,
+        "signal_id": "sig_ttl_zero",
+    }
+
+    with patch(
+        "alpha_strike.handlers.moomoo_handler.MoomooHandler.execute",
+        return_value={"order_id": "500", "ret_code": 0},
+    ) as mock_exec:
+        await client.post("/webhook", json=payload)
+        limiter._storage.reset()
+        await client.post("/webhook", json=payload)
+
+    # TTL=0 なので 2 回とも broker を呼ぶ
+    assert mock_exec.call_count == 2

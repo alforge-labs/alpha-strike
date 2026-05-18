@@ -78,6 +78,8 @@ ssh oracle-strike "sudo cat /etc/alpha-strike/.env | sed 's/=.*/=***/'"
 - [ ] `MOOMOO_TRADE_PWD_MD5` が設定済み
 - [ ] `MOOMOO_TRADE_ENV=SIMULATE`（**LIVE になっていないか必ず確認**）
 - [ ] OANDA を使わないなら `OANDA_API_KEY`/`OANDA_ACCOUNT_ID` は空でも可（起動時に WARN が出るのみ、ペーパー運用では問題なし）
+- [ ] `IDEMPOTENCY_TTL_SECONDS` 未設定（既定 600 秒で OK）、または運用要件に合わせて調整済み
+- [ ] TradingView Pine 側で **`signal_id`** を `<strategy_id>_<timeframe>_<bar_open_time>` 形式で生成する想定（同一バー内再発火を idempotency で弾けるパターン、[tradingview.md §6-bis](../tradingview.md) 参照）
 
 ### 2-2. /webhook 認証テスト（外部から）
 
