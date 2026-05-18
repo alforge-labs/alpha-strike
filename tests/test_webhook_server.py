@@ -612,3 +612,90 @@ async def test_health_ready_moomoo_opend_unreachable(client, monkeypatch):
     data = response.json()
     assert data["status"] == "degraded"
     assert data["checks"]["moomoo"]["status"] == "error"
+
+
+# ============================================================
+# Kill switch / maintenance mode tests (issue #40)
+# ============================================================
+# 各テストの先頭で slowapi の rate limiter をリセットして、
+# 他テストとの相乗りで 429 が出るのを避ける。
+
+
+@pytest.mark.anyio
+async def test_maintenance_mode_env_returns_503(client, monkeypatch):
+    """MAINTENANCE_MODE=1 環境変数で /webhook が 503 を返す"""
+    from alpha_strike.webhook_server import limiter
+
+    limiter._storage.reset()
+    monkeypatch.setenv("MAINTENANCE_MODE", "1")
+    response = await client.post("/webhook", json=BASE_PAYLOAD)
+    assert response.status_code == 503
+    body = response.json()
+    assert "maintenance" in body["detail"].lower()
+
+
+@pytest.mark.anyio
+async def test_maintenance_file_returns_503_with_reason(client, monkeypatch, tmp_path):
+    """MAINTENANCE_FILE が存在すると 503 を返し、ファイル内容が detail に含まれる"""
+    from alpha_strike.webhook_server import limiter
+
+    limiter._storage.reset()
+    flag = tmp_path / "MAINTENANCE"
+    flag.write_text("emergency stop: ticker XYZ runaway")
+    monkeypatch.setenv("MAINTENANCE_FILE", str(flag))
+
+    response = await client.post("/webhook", json=BASE_PAYLOAD)
+    assert response.status_code == 503
+    assert "emergency stop" in response.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_maintenance_file_returns_default_reason_when_empty(client, monkeypatch, tmp_path):
+    """MAINTENANCE_FILE が空でも 503 を返す（デフォルト理由でフォールバック）"""
+    from alpha_strike.webhook_server import limiter
+
+    limiter._storage.reset()
+    flag = tmp_path / "MAINTENANCE"
+    flag.write_text("")  # 空ファイル
+    monkeypatch.setenv("MAINTENANCE_FILE", str(flag))
+
+    response = await client.post("/webhook", json=BASE_PAYLOAD)
+    assert response.status_code == 503
+    assert response.json()["detail"]  # 何らかの detail が返る
+
+
+@pytest.mark.anyio
+async def test_health_endpoint_unaffected_by_maintenance(client, monkeypatch, tmp_path):
+    """maintenance mode 中も /health は 200 を返す（外部ヘルスチェック維持のため）"""
+    flag = tmp_path / "MAINTENANCE"
+    flag.write_text("maintenance for test")
+    monkeypatch.setenv("MAINTENANCE_FILE", str(flag))
+    monkeypatch.setenv("MAINTENANCE_MODE", "1")
+
+    response = await client.get("/health")
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+@pytest.mark.anyio
+async def test_maintenance_checked_before_passphrase(client, monkeypatch):
+    """passphrase 検証より maintenance チェックが先に行われる (誤 passphrase でも 503 が優先)"""
+    from alpha_strike.webhook_server import limiter
+
+    limiter._storage.reset()
+    monkeypatch.setenv("MAINTENANCE_MODE", "1")
+    payload = {**BASE_PAYLOAD, "passphrase": "WRONG-PASSPHRASE"}
+    response = await client.post("/webhook", json=payload)
+    # maintenance が先にチェックされるので 503 (401 ではない)
+    assert response.status_code == 503
+
+
+@pytest.mark.anyio
+async def test_trade_closed_endpoint_also_returns_503_in_maintenance(client, monkeypatch):
+    """/events/trade-closed も maintenance mode で 503"""
+    from alpha_strike.webhook_server import limiter
+
+    limiter._storage.reset()
+    monkeypatch.setenv("MAINTENANCE_MODE", "1")
+    response = await client.post("/events/trade-closed", json=TRADE_CLOSED_PAYLOAD)
+    assert response.status_code == 503

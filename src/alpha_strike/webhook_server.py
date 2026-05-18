@@ -17,6 +17,7 @@ import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 from time import perf_counter
 
 from dotenv import load_dotenv
@@ -50,6 +51,46 @@ logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address)
 event_logger = JsonlEventLogger()
+
+
+DEFAULT_MAINTENANCE_FILE = "/etc/alpha-strike/MAINTENANCE"
+
+
+def _check_maintenance_mode() -> None:
+    """Kill switch チェック。発注を受付停止状態にしたいときに 503 を返す。
+
+    起動方法 (2 通り):
+
+    1. **環境変数** `MAINTENANCE_MODE=1`
+       - systemd 起動時に `.env` 経由で固定したい場合に使用
+       - 切替えには `systemctl restart` が必要
+
+    2. **ファイルフラグ** `${MAINTENANCE_FILE:-/etc/alpha-strike/MAINTENANCE}`
+       - 即時切替えしたい場合に使用（restart 不要）
+       - 停止: `echo "理由" | sudo tee /etc/alpha-strike/MAINTENANCE`
+       - 解除: `sudo rm /etc/alpha-strike/MAINTENANCE`
+       - ファイル内容を 503 detail に含めて TradingView 側のエラーログに理由を残せる
+
+    `/health` には影響しない（外部ヘルスチェック / Cloudflare Tunnel 維持のため）。
+    `_verify_passphrase` より前に呼ばれるため、maintenance 中の passphrase 試行はログに残らない。
+    """
+    if os.getenv("MAINTENANCE_MODE", "0") == "1":
+        logger.warning("maintenance mode (env): orders not accepted")
+        raise HTTPException(
+            status_code=503,
+            detail="alpha-strike maintenance mode — orders not accepted",
+        )
+
+    flag_path = Path(os.getenv("MAINTENANCE_FILE", DEFAULT_MAINTENANCE_FILE))
+    if flag_path.exists():
+        try:
+            reason = flag_path.read_text().strip()
+        except OSError as e:
+            logger.warning("MAINTENANCE_FILE 読み取り失敗: %s", e)
+            reason = ""
+        reason = reason or "alpha-strike maintenance mode"
+        logger.warning("maintenance mode (file=%s): %s", flag_path, reason)
+        raise HTTPException(status_code=503, detail=f"maintenance: {reason}")
 
 
 def _verify_passphrase(passphrase: str) -> None:
@@ -103,10 +144,12 @@ async def receive_webhook(
 ) -> OrderResult:  # noqa: ARG001
     """TradingViewからのWebhookを受け取り、指定ブローカーへ注文を送信する。
 
+    - maintenance mode (env or file flag): 503 Service Unavailable
     - passphrase が環境変数と一致しない場合: 401 Unauthorized
     - 設定エラー（APIキー未設定等）: 500 Internal Server Error
     - 注文失敗（ネットワーク、API拒否等）: 502 Bad Gateway
     """
+    _check_maintenance_mode()
     _verify_passphrase(payload.passphrase)
 
     order_router: OrderRouter = request.app.state.order_router
@@ -271,6 +314,7 @@ async def ingest_trade_closed_event(
     request: Request, payload: TradeClosedPayload
 ) -> EventIngestResult:  # noqa: ARG001
     """broker poller / callback 由来の trade_closed を保存する。"""
+    _check_maintenance_mode()
     _verify_passphrase(payload.passphrase)
 
     event = TradeClosedEvent(
