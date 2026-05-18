@@ -19,4 +19,7 @@ class BrokerHandler(Protocol):
             ValueError: 環境変数が不足または不正な場合
             RuntimeError: APIがエラーを返した場合
         """
-        ...
+        # Protocol method body — concrete implementations must override this.
+        # `pass` を使うことで CodeQL の py/ineffectual-statement (Ellipsis 検出)
+        # を回避しつつ、Protocol としての契約は変わらない。
+        raise NotImplementedError  # pragma: no cover
