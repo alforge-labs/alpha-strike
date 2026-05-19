@@ -111,6 +111,16 @@ class MoomooHandler:
                 f"MOOMOO_TRD_ENV は SIMULATE または REAL を指定してください（現在: {trd_env_str}）"
             )
 
+        # moomoo crypto API は live only。SIMULATE では SDK が
+        # "the type of environment param is wrong" を返すため、
+        # OpenD 接続前にアクション可能なメッセージで早期拒否する。
+        if payload.asset_class.upper() == "CRYPTO" and trd_env_str == "SIMULATE":
+            raise ValueError(
+                "moomoo crypto は SIMULATE 環境を受け付けません（live only）。"
+                "paper 運用したい場合は BTC ETF (US.IBIT / US.FBTC / US.BITO 等) を "
+                "asset_class=US で発注するか、MOOMOO_TRD_ENV=REAL で実 money 運用してください。"
+            )
+
         trd_env = trd_env_map[trd_env_str]
         trd_side = futu.TrdSide.BUY if payload.action == "buy" else futu.TrdSide.SELL
 

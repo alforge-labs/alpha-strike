@@ -115,6 +115,40 @@ class TestMoomooOrderHandler:
         with pytest.raises(ValueError, match="SIMULATE または REAL"):
             MoomooHandler().execute(_make_payload())
 
+    def test_crypto_with_simulate_raises_value_error_before_connect(self, monkeypatch):
+        """CRYPTO + SIMULATE は moomoo API が live only のため、OpenD 接続前に ValueError で早期拒否する。
+
+        実機検証 (2026-05-18 alpha-crypto): SIMULATE + CC.BTC で moomoo SDK が
+        ret_code=-1 "the type of environment param is wrong" を返す → cryptic な 502 になる。
+        この早期チェックで、ユーザーに ETF 代替 (US.IBIT 等) または REAL 利用を促す。
+        """
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+        # socket.create_connection が呼ばれたら validation より後ろまで進んだことになる
+        with patch("socket.create_connection") as mock_conn:
+            with pytest.raises(ValueError, match="crypto"):
+                MoomooHandler().execute(
+                    _make_payload(asset_class="CRYPTO", ticker="CC.BTC", quantity=0.01)
+                )
+            mock_conn.assert_not_called()
+
+    def test_crypto_with_simulate_error_suggests_etf_alternative(self, monkeypatch):
+        """エラーメッセージに ETF 代替案 (US.IBIT) と REAL 利用案が含まれることを保証する。"""
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+        with patch("socket.create_connection"):
+            with pytest.raises(ValueError) as exc_info:
+                MoomooHandler().execute(_make_payload(asset_class="CRYPTO", ticker="CC.BTC"))
+        msg = str(exc_info.value)
+        assert "live only" in msg or "SIMULATE" in msg
+        assert "IBIT" in msg or "ETF" in msg
+        assert "REAL" in msg
+
+    def test_crypto_case_insensitive_simulate_guard(self, monkeypatch):
+        """asset_class が小文字 'crypto' でも guard が効く。"""
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "simulate")
+        with patch("socket.create_connection"):
+            with pytest.raises(ValueError, match="crypto"):
+                MoomooHandler().execute(_make_payload(asset_class="crypto", ticker="CC.BTC"))
+
     def test_opend_not_running_raises_runtime_error(self, monkeypatch):
         monkeypatch.setenv("MOOMOO_HOST", "127.0.0.1")
         monkeypatch.setenv("MOOMOO_PORT", "11111")
@@ -169,8 +203,12 @@ class TestMoomooOrderHandler:
             assert mock_sec.call_args.kwargs["filter_trdmarket"] == futu.TrdMarket.HK
 
     def test_crypto_asset_class_uses_crypto_market(self, monkeypatch):
-        """CRYPTO + CC.BTC を payload で送ると filter_trdmarket=CRYPTO で発注される。"""
-        monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+        """CRYPTO + CC.BTC を REAL 環境で payload に渡すと filter_trdmarket=CRYPTO で発注される。
+
+        moomoo crypto は live only のため SIMULATE は早期検出で拒否される。
+        正常系は REAL 環境でのみ成立する。
+        """
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "REAL")
         ctx = _mock_ctx(order_id="crypto-1", dealt_qty=0.01, dealt_avg_price=68000.0)
         with patch("socket.create_connection"):
             with patch("futu.OpenSecTradeContext", return_value=ctx) as mock_sec:
