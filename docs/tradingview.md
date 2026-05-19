@@ -115,6 +115,17 @@ WAF Custom Rule が Free plan の枠を超える場合や、より柔軟なロ�
 > - SDK 内部では `OpenSecTradeContext(filter_trdmarket=TrdMarket.CRYPTO, security_firm=SecurityFirm.NONE)` を使用（`handlers/moomoo_handler.py` 参照）
 > - 銘柄コード: `CC.BTC`, `CC.ETH`, `CC.XRP` 等（米国大文字 + `CC.` プレフィックス）
 
+> ⚠️ **moomoo crypto は live (REAL) only — SIMULATE 不可**:
+> moomoo の crypto trading API は live 環境専用で、`MOOMOO_TRD_ENV=SIMULATE` で
+> crypto order を送ると SDK が `the type of environment param is wrong` を返す。
+> alpha-strike は **OpenD 接続前にこの組み合わせを検出して `ValueError` で早期拒否** する
+> （`handlers/moomoo_handler.py`、テスト: `test_crypto_with_simulate_raises_value_error_before_connect`）。
+>
+> ペーパー検証したい場合は以下のいずれか:
+> - **BTC ETF (`US.IBIT` / `US.FBTC` / `US.BITO`) を `asset_class=US` で発注**（推奨）
+> - `MOOMOO_TRD_ENV=REAL` で少額（0.001 BTC ≈ $80）から開始
+> - alpha-strike を経由せず TradingView Paper Trading 内蔵を使う
+
 ### 4-2. OANDA PRACTICE（FX デモ口座）
 
 **USD/JPY 1000 通貨買い**
