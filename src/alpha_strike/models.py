@@ -57,6 +57,23 @@ class WebhookPayload(BaseModel):
         max_length=256,
         description="任意メモ",
     )
+    portfolio_id: str | None = Field(
+        default=None,
+        pattern=r"^[a-zA-Z0-9_.-]{1,64}$",
+        description=(
+            "combine portfolio 識別子。alpha-forge の combine portfolio Pine "
+            "(--combine-strategies) から発火する webhook で使用される。"
+            "alpha-forge issue #980 で alert log → metrics 再構築に必要。"
+        ),
+    )
+    sub_strategy_id: str | None = Field(
+        default=None,
+        pattern=r"^[a-zA-Z0-9_.-]{1,64}$",
+        description=(
+            "combine portfolio 内の個別 sub-strategy 識別子。"
+            "alpha-forge issue #980 でポジション推移再構築に必要。"
+        ),
+    )
 
 
 class OrderResult(BaseModel):
@@ -93,6 +110,9 @@ class SignalEvent(BaseModel):
     alert_timestamp: datetime | None = None
     run_mode: Literal["paper", "live"] = "live"
     alert_name: str | None = None
+    # alpha-forge issue #980: combine portfolio Pine からの発火を識別するため
+    portfolio_id: str | None = None
+    sub_strategy_id: str | None = None
 
 
 class OrderEvent(BaseModel):
@@ -114,6 +134,9 @@ class OrderEvent(BaseModel):
     snapshot_id: str | None = None
     run_mode: Literal["paper", "live"] = "live"
     error_type: str | None = None
+    # alpha-forge issue #980
+    portfolio_id: str | None = None
+    sub_strategy_id: str | None = None
 
 
 class FillEvent(BaseModel):
@@ -138,6 +161,9 @@ class FillEvent(BaseModel):
     run_mode: Literal["paper", "live"] = "live"
     commission: float | None = None
     slippage_bps: float | None = None
+    # alpha-forge issue #980
+    portfolio_id: str | None = None
+    sub_strategy_id: str | None = None
 
 
 class TradeClosedEvent(BaseModel):
@@ -160,6 +186,9 @@ class TradeClosedEvent(BaseModel):
     strategy_version: str | None = None
     snapshot_id: str | None = None
     run_mode: Literal["paper", "live"] = "live"
+    # alpha-forge issue #980
+    portfolio_id: str | None = None
+    sub_strategy_id: str | None = None
     commission: float | None = None
     exit_reason: str | None = None
 

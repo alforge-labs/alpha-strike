@@ -59,6 +59,9 @@ class FillEventService:
             run_mode=payload.run_mode,
             commission=float(result["commission"]) if result.get("commission") is not None else None,
             slippage_bps=float(result["slippage_bps"]) if result.get("slippage_bps") is not None else None,
+            # alpha-forge issue #980
+            portfolio_id=payload.portfolio_id,
+            sub_strategy_id=payload.sub_strategy_id,
         )
 
     def allocate(self, fill_event: FillEvent) -> list[FillEvent]:
