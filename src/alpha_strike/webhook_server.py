@@ -225,6 +225,9 @@ async def receive_webhook(
         alert_timestamp=payload.alert_timestamp,
         run_mode=payload.run_mode,
         alert_name=payload.alert_name,
+        # alpha-forge issue #980
+        portfolio_id=payload.portfolio_id,
+        sub_strategy_id=payload.sub_strategy_id,
     )
     event_logger.append(signal_event)
 
@@ -262,6 +265,9 @@ async def receive_webhook(
             strategy_version=payload.strategy_version,
             snapshot_id=payload.snapshot_id,
             run_mode=payload.run_mode,
+            # alpha-forge issue #980
+            portfolio_id=payload.portfolio_id,
+            sub_strategy_id=payload.sub_strategy_id,
         )
         event_logger.append(order_event)
 
@@ -319,6 +325,9 @@ async def receive_webhook(
                 snapshot_id=payload.snapshot_id,
                 run_mode=payload.run_mode,
                 error_type=type(e).__name__,
+                # alpha-forge issue #980
+                portfolio_id=payload.portfolio_id,
+                sub_strategy_id=payload.sub_strategy_id,
             )
         )
         logger.error("設定エラー: %s", e)
@@ -346,6 +355,9 @@ async def receive_webhook(
                 snapshot_id=payload.snapshot_id,
                 run_mode=payload.run_mode,
                 error_type=type(e).__name__,
+                # alpha-forge issue #980
+                portfolio_id=payload.portfolio_id,
+                sub_strategy_id=payload.sub_strategy_id,
             )
         )
         logger.error(
