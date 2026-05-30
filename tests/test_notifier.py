@@ -22,7 +22,8 @@ def test_disabled_when_topic_unset(monkeypatch):
     assert n.enabled is False
     # 無効時は opener を呼ばず False を返す（no-op）
     calls: list = []
-    assert n.notify("t", "b", opener=lambda req, timeout=0: calls.append(req)) is False
+    result = n.notify("t", "b", opener=lambda req, timeout=0: calls.append(req))
+    assert result is False
     assert calls == []
 
 

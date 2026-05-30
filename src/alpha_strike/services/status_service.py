@@ -69,7 +69,8 @@ class AccountStatus(BaseModel):
 class StatusProvider(Protocol):
     """トレード状況取得の抽象。テストで差し替え可能にする。"""
 
-    def get_status(self, *, trd_env: str | None = None) -> AccountStatus: ...
+    def get_status(self, *, trd_env: str | None = None) -> AccountStatus:
+        """broker から口座サマリ・建玉・直近注文を取得する。"""
 
 
 def _as_float(value: Any) -> float | None:
