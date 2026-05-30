@@ -75,6 +75,24 @@ curl -H "Authorization: Bearer $STATUS_API_TOKEN" https://strike.alforgelabs.com
 | `MOOMOO_HOST` / `MOOMOO_PORT` | OpenD 接続先（既定 127.0.0.1:11111） |
 | `MOOMOO_TRD_ENV` | 既定の取引環境（SIMULATE / REAL） |
 
-## Phase 2（予定）
+## Phase 2: 約定プッシュ通知（実装済み）
 
-発注後に OpenD で最終 order status を照合し、Fill / Cancelled を ntfy にプッシュ通知する（issue #57 B）。
+moomoo の発注後、`ORDER_RECONCILE_DELAY_SECONDS`（既定 5 秒）待ってから OpenD で**最終 order status を照合（reconcile）**し、結果を ntfy にプッシュ通知する。これにより「webhook は注文成功ログなのに実際は `CANCELLED_ALL`」のような乖離をプッシュで即座に把握できる。
+
+- バックグラウンドタスクで実行（webhook レスポンスをブロックしない）。
+- `NTFY_TOPIC` 未設定なら **no-op（無効）**。通知失敗は握りつぶしてサーバーを落とさない。
+- 通知内容: ticker / action / qty / `order_status` / `dealt_qty` / order_id。
+  - `FILLED_ALL` / `FILLED_PART` → ✅（tag: white_check_mark）
+  - `CANCELLED_ALL` / `FAILED` 等 → ⚠️（tag: warning, priority: high）
+  - pending 系 → ⏳（tag: hourglass）
+  - 照合で order が見つからない → ⏳ 照合不可（沈黙させず通知）
+
+### 環境変数
+
+| 変数 | 用途 |
+|------|------|
+| `NTFY_TOPIC` | ntfy トピック。未設定で通知無効 |
+| `NTFY_SERVER` | ntfy サーバー（既定 https://ntfy.sh） |
+| `ORDER_RECONCILE_DELAY_SECONDS` | 発注から status 照合までの待機秒数（既定 5） |
+
+> 成行注文は市場開場時間中のみ約定するため、休場中の発注は reconcile 時点で pending/cancelled となることがある。
