@@ -125,6 +125,24 @@ curl -s https://strike.alforgelabs.com/status \
 
 これで「ネットワーク層（Access Service Token）＋アプリ層（Bearer）」の二重防御になる。
 
+## 運用ヘルパー: `scripts/status_curl.sh`
+
+二段認証（Cloudflare Access Service Token + Bearer）の curl を 1 コマンドにまとめたヘルパー。
+認証情報は op:// 参照（`op read`）か直接 env から解決する（値は標準出力に出さない）。
+
+```bash
+# ~/.zshrc 等に一度だけ（実値は 1Password に置く）
+export STRIKE_CF_ID_REF="op://AlphaTrade/alpha-strike-status/CF-Access-Client-Id"
+export STRIKE_CF_SECRET_REF="op://AlphaTrade/alpha-strike-status/CF-Access-Client-Secret"
+export STRIKE_STATUS_TOKEN_REF="op://AlphaTrade/alpha-strike/STATUS_API_TOKEN"
+
+# 実行
+scripts/status_curl.sh            # /status（口座サマリ + 建玉 + 直近注文）
+scripts/status_curl.sh events 20  # /status/events?limit=20
+```
+
+op を使わない場合は `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` / `STATUS_API_TOKEN` を直接 env で渡す。`STRIKE_BASE_URL` で接続先を上書きできる（既定 `https://strike.alforgelabs.com`）。jq があれば整形表示する。
+
 ## 環境変数
 
 | 変数 | 用途 |
