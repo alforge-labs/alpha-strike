@@ -47,7 +47,7 @@ from alpha_strike.models import (
 from alpha_strike.services.fill_service import FillEventService, _generate_id
 from alpha_strike.services.idempotency import IdempotencyStore
 from alpha_strike.services.notifier import NtfyNotifier
-from alpha_strike.services.order_reconcile import reconcile_and_notify
+from alpha_strike.services.order_reconcile import reconcile_order
 from alpha_strike.services.order_service import OrderRouter, build_default_router
 from alpha_strike.services.status_auth import require_status_token
 from alpha_strike.services.status_service import (
@@ -322,24 +322,31 @@ async def receive_webhook(
         )
 
         # #57 Phase 2: moomoo は submission 受理後に実 fill が確定するため、
-        # バックグラウンドで最終 order status を照合して ntfy 通知する。
+        # バックグラウンドで OpenD の最終 order status を照合し、権威イベント
+        # OrderReconciledEvent を永続化する（ntfy 通知は有効時のみ）。
+        # データ正確性は通知設定に依存しないため、notifier.enabled では gate しない。
         notifier = getattr(request.app.state, "notifier", None)
         status_provider = getattr(request.app.state, "status_provider", None)
-        if (
-            payload.broker == "moomoo"
-            and broker_order_id
-            and notifier is not None
-            and getattr(notifier, "enabled", False)
-            and status_provider is not None
-        ):
+        if payload.broker == "moomoo" and broker_order_id and status_provider is not None:
             background_tasks.add_task(
-                reconcile_and_notify,
+                reconcile_order,
                 provider=status_provider,
+                event_logger=event_logger,
                 notifier=notifier,
                 broker_order_id=broker_order_id,
+                signal_id=signal_id,
+                order_id=internal_order_id,
+                broker=payload.broker,
+                asset_class=payload.asset_class,
                 ticker=payload.ticker,
                 action=payload.action,
                 quantity=payload.quantity,
+                strategy_id=payload.strategy_id,
+                strategy_version=payload.strategy_version,
+                snapshot_id=payload.snapshot_id,
+                run_mode=payload.run_mode,
+                portfolio_id=payload.portfolio_id,
+                sub_strategy_id=payload.sub_strategy_id,
                 delay_seconds=getattr(request.app.state, "reconcile_delay", 5.0),
             )
 

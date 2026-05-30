@@ -59,22 +59,36 @@ def anyio_backend():
     return "asyncio"
 
 
+class _FakeLogger:
+    def __init__(self):
+        self.events = []
+
+    def append(self, event):
+        self.events.append(event)
+
+    def reconciled(self):
+        return [e for e in self.events if getattr(e, "event_type", "") == "order_reconciled"]
+
+
 @pytest.fixture
 async def client(monkeypatch):
     monkeypatch.setenv("WEBHOOK_PASSPHRASE", "test-secret")
+    fake_logger = _FakeLogger()
+    # webhook が使う module global event_logger を fake に差し替え（永続化を捕捉）
+    monkeypatch.setattr("alpha_strike.webhook_server.event_logger", fake_logger)
     app.state.order_router = _FakeRouter()
     app.state.fill_service = FillEventService(JsonlEventLogger())
     app.state.idempotency = IdempotencyStore(ttl_seconds=600)
     app.state.status_provider = _FakeProvider()
     app.state.notifier = _FakeNotifier()
     app.state.reconcile_delay = 0  # テストは即時照合
+    app.state._fake_logger = fake_logger
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as ac:
         yield ac
-    # テスト間 state リーク防止: 共有 app.state（シングルトン）をクリーンアップし、
-    # 後続テストで reconcile/notify が誤発火しないようにする。
-    for attr in ("notifier", "status_provider", "reconcile_delay"):
+    # テスト間 state リーク防止
+    for attr in ("notifier", "status_provider", "reconcile_delay", "_fake_logger"):
         try:
             delattr(app.state, attr)
         except (AttributeError, KeyError):
@@ -82,7 +96,7 @@ async def client(monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_moomoo_order_schedules_reconcile_notification(client):
+async def test_moomoo_order_persists_reconciled_event_and_notifies(client):
     payload = {
         "passphrase": "test-secret",
         "broker": "moomoo",
@@ -95,15 +109,21 @@ async def test_moomoo_order_schedules_reconcile_notification(client):
     resp = await client.post("/webhook", json=payload)
     assert resp.status_code == 200
     # BackgroundTask は ASGITransport のレスポンス完了までに実行される
+    # 権威イベント OrderReconciledEvent が永続化される（実 fill = CANCELLED_ALL）
+    reconciled = app.state._fake_logger.reconciled()
+    assert len(reconciled) == 1
+    assert reconciled[0].order_status == "CANCELLED_ALL"
+    assert reconciled[0].is_filled is False
+    assert reconciled[0].broker_order_id == "366675"
+    # notifier 有効なので通知も発火
     notifier = app.state.notifier
     assert len(notifier.calls) == 1
-    # submission 成功でも実 fill は CANCELLED_ALL → 乖離が通知に出る
     assert "CANCELLED_ALL" in notifier.calls[0]["message"]
-    assert "warning" in notifier.calls[0]["tags"]
 
 
 @pytest.mark.anyio
-async def test_notifier_disabled_no_notification(client, monkeypatch):
+async def test_notifier_disabled_still_persists_reconciled_event(client):
+    """ntfy 無効でも reconcile イベントは永続化される（データ正確性は通知に依存しない）。"""
     app.state.notifier.enabled = False
     payload = {
         "passphrase": "test-secret",
@@ -116,4 +136,7 @@ async def test_notifier_disabled_no_notification(client, monkeypatch):
     }
     resp = await client.post("/webhook", json=payload)
     assert resp.status_code == 200
-    assert app.state.notifier.calls == []
+    assert app.state.notifier.calls == []  # 通知なし
+    reconciled = app.state._fake_logger.reconciled()  # 永続化はされる
+    assert len(reconciled) == 1
+    assert reconciled[0].order_status == "CANCELLED_ALL"
