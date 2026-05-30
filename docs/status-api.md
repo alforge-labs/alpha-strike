@@ -151,17 +151,25 @@ op を使わない場合は `CF_ACCESS_CLIENT_ID` / `CF_ACCESS_CLIENT_SECRET` / 
 | `MOOMOO_HOST` / `MOOMOO_PORT` | OpenD 接続先（既定 127.0.0.1:11111） |
 | `MOOMOO_TRD_ENV` | 既定の取引環境（SIMULATE / REAL） |
 
-## Phase 2: 約定プッシュ通知（実装済み）
+## Phase 2: 約定 reconcile（イベント永続化 + プッシュ通知）
 
-moomoo の発注後、`ORDER_RECONCILE_DELAY_SECONDS`（既定 5 秒）待ってから OpenD で**最終 order status を照合（reconcile）**し、結果を ntfy にプッシュ通知する。これにより「webhook は注文成功ログなのに実際は `CANCELLED_ALL`」のような乖離をプッシュで即座に把握できる。
+moomoo の発注後、`ORDER_RECONCILE_DELAY_SECONDS`（既定 5 秒）待ってから OpenD で**最終 order status を照合（reconcile）**する。これにより「webhook は注文成功ログなのに実際は `CANCELLED_ALL`」のような **submission ≠ fill の盲点を source（alpha-strike）で確定**する。
 
-- バックグラウンドタスクで実行（webhook レスポンスをブロックしない）。
-- `NTFY_TOPIC` 未設定なら **no-op（無効）**。通知失敗は握りつぶしてサーバーを落とさない。
+### 1. 権威イベントの永続化（常時）
+
+照合結果を **`OrderReconciledEvent`（`event_type=order_reconciled`）として常に JSONL に永続化**する（ntfy の有効/無効に依存しない）。
+
+- フィールド: `order_status`（OpenD 由来の最終 status）/ `dealt_qty` / `dealt_avg_price` / `is_filled`（FILLED 系かつ dealt_qty>0）/ `broker_order_id` / `signal_id` / `order_id` ほか。
+- order が見つからない場合は `order_status="NOT_FOUND"` / `is_filled=False` で記録（沈黙させない）。
+- **下流の扱い**: 同一 order_id について `order_reconciled` が存在する場合、`fill_received`（submission 応答ベースで楽観的）より **`order_reconciled` を優先**する（forge live 等での live 集計の正となる）。
+
+### 2. ntfy プッシュ通知（有効時のみ）
+
+- `NTFY_TOPIC` 設定時のみ通知（未設定なら no-op）。失敗は握りつぶしてサーバーを落とさない。
 - 通知内容: ticker / action / qty / `order_status` / `dealt_qty` / order_id。
-  - `FILLED_ALL` / `FILLED_PART` → ✅（tag: white_check_mark）
-  - `CANCELLED_ALL` / `FAILED` 等 → ⚠️（tag: warning, priority: high）
-  - pending 系 → ⏳（tag: hourglass）
-  - 照合で order が見つからない → ⏳ 照合不可（沈黙させず通知）
+  - `FILLED_ALL` / `FILLED_PART` → ✅（white_check_mark）/ `CANCELLED_ALL` 等 → ⚠️（warning, high）/ pending → ⏳ / 未発見 → ⏳ 照合不可。
+
+いずれもバックグラウンドタスクで実行（webhook レスポンスをブロックしない）。
 
 ### 環境変数
 

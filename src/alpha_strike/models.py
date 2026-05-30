@@ -193,6 +193,40 @@ class TradeClosedEvent(BaseModel):
     exit_reason: str | None = None
 
 
+class OrderReconciledEvent(BaseModel):
+    """発注後に broker(OpenD) で最終 order status を照合した権威イベント (#57)。
+
+    ``fill_received``（submission 応答ベースで楽観的）と異なり、本イベントは OpenD の
+    実 order status / dealt_qty を反映する。同一 order_id について本イベントが存在する場合、
+    下流（forge live 等）は fill_received より本イベントを優先して扱う。
+    """
+
+    event_type: Literal["order_reconciled"] = "order_reconciled"
+    event_id: str
+    signal_id: str
+    order_id: str
+    occurred_at: datetime
+    broker: Literal["oanda", "moomoo"]
+    asset_class: Literal["FX", "COMMODITY", "US", "HK", "INDEX", "CRYPTO"]
+    action: Literal["buy", "sell"]
+    ticker: str
+    quantity: float
+    # broker(OpenD) 由来の最終 status（例: FILLED_ALL / CANCELLED_ALL / NOT_FOUND）
+    order_status: str
+    dealt_qty: float = 0.0
+    dealt_avg_price: float = 0.0
+    # 実約定したか（FILLED 系 かつ dealt_qty>0）。submission≠fill の盲点をここで確定する。
+    is_filled: bool = False
+    broker_order_id: str | None = None
+    strategy_id: str | None = None
+    strategy_version: str | None = None
+    snapshot_id: str | None = None
+    run_mode: Literal["paper", "live"] = "live"
+    # alpha-forge issue #980
+    portfolio_id: str | None = None
+    sub_strategy_id: str | None = None
+
+
 class TradeClosedPayload(BaseModel):
     passphrase: str = Field(repr=False)
     signal_id: str
