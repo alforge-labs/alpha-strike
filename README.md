@@ -38,7 +38,7 @@ alpha-strike (FastAPI, this repo)
 - **リトライ + タイムアウト** — `tenacity` で broker API 一時障害に対する自動リトライ（OANDA: 指数バックオフ ×3、moomoo: 固定 2 秒 ×3）
 - **JSONL イベントログ** — `SignalEvent` / `OrderEvent` / `FillEvent` / `TradeClosedEvent` を逐次追記、journal との pnl 突合に利用可
 - **メモリ・サービス監視** — `scripts/check_memory.sh` を cron 登録すれば 5 分毎にメモリ・swap・サービス・OOM を ntfy 通知
-- **本格運用向けデプロイ手順** — `docs/ops/vm-provisioning.md` に Oracle Cloud E2.1.Micro + Cloudflare Tunnel + systemd の完全手順を収録
+- **本格運用向けデプロイ手順** — 初回構築は `docs/ops/vm-provisioning.md`（Oracle Cloud E2.1.Micro + Cloudflare Tunnel + systemd）、**新バージョンの反映（PyPI → VM 更新 + 再起動）は `docs/ops/deployment.md`** を参照
 
 ## クイックスタート
 
