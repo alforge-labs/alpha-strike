@@ -163,9 +163,12 @@ def test_status_service_uses_futu_not_moomoo():
     protobuf 記述子の重複登録 (duplicate file name Trd_Common.proto) でサーバープロセス内の
     broker クエリが 502 になる。
     """
-    import alpha_strike.services.status_service as ss
+    import sys
     from pathlib import Path
 
-    src = Path(ss.__file__).read_text(encoding="utf-8")
+    # status_service はファイル先頭で from-import 済み。二重 import を避けるため
+    # sys.modules から取得してソースを読む。
+    mod = sys.modules["alpha_strike.services.status_service"]
+    src = Path(mod.__file__).read_text(encoding="utf-8")
     assert "import futu" in src
     assert "import moomoo" not in src
