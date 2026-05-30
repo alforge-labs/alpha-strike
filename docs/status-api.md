@@ -59,13 +59,71 @@ curl -H "Authorization: Bearer $STATUS_API_TOKEN" https://strike.alforgelabs.com
 
 ### 2. ネットワーク層: Cloudflare Access（強く推奨）
 
-口座残高・建玉はインターネット公開ホスト（`strike.alforgelabs.com`）上で返るため、ネットワーク層でも保護する。oracle-strike の SSH で既に使用している **Cloudflare Access（ゼロトラスト）** を `/status*` パスにも適用する:
+口座残高・建玉はインターネット公開ホスト（`strike.alforgelabs.com`）上で返るため、ネットワーク層でも保護する。oracle-strike の SSH で既に使用している **Cloudflare Access（ゼロトラスト）** を `/status*` パスにも**パス単位で**適用する。
 
-1. Cloudflare Zero Trust → Access → Applications で `strike.alforgelabs.com/status*`（および `/status/events`）を対象に Self-hosted Application を作成。
-2. 許可ポリシー（例: 自分の Email / Google ログイン）を設定。
-3. `/webhook` は対象に**含めない**（TradingView からの POST を Access が遮断しないよう、従来どおり WAF の IP 許可リストで保護）。
+**設計上の要点:**
 
-> Cloudflare の UI 名称はバージョンで変わるため、実機で確認のこと。`/webhook`（WAF IP 許可）と `/status*`（Access 認証）を**パスで分離**するのが要点。
+- `/status*` は origin が `Authorization: Bearer` を要求する。Access を前段に置くと curl は「**Access 認証 + Bearer**」の二段になる。
+- curl / スクリプト運用が前提のため、**Access の認証方式は Service Token** を採用する（ブラウザの対話ログインだと origin の Bearer で 401 になる。ブラウザ閲覧したい場合は origin 側で Cloudflare Access JWT（`Cf-Access-Jwt-Assertion`）を検証する改修が別途必要）。
+- `/webhook` は **Access 対象に含めない**（TradingView の POST を遮断しないよう、従来どおり [WAF IP 許可リスト](tradingview.md)（§2-A）で保護）。パスで分離するのが要点。
+
+#### 2-1. ダッシュボードで設定する場合
+
+> UI 名称はバージョンで変わるため、近い項目を実機で確認しながら進める。
+
+1. **Service Token 作成**: Zero Trust → Access → Service Auth → **Service Tokens** → Create →
+   名前 `alpha-strike-status` → **Client ID** / **Client Secret** を保管（Secret は一度だけ表示）。
+2. **Access Application 作成**: Zero Trust → Access → Applications → Add → **Self-hosted** →
+   - Application domain: `strike.alforgelabs.com` / **Path**: `status`（`/status` と `/status/events` を含む。サブパスが別扱いなら `status/events` のアプリも追加）。
+   - **Path を空にしない**（空だと `/webhook` まで Access 対象になり TradingView が遮断される）。
+3. **ポリシー**: Action **Service Auth** / Include **Service Token** = `alpha-strike-status`。
+
+#### 2-2. Cloudflare API で自動化する場合
+
+`Account → Access: Apps and Policies: Edit` + `Access: Service Tokens: Edit` 権限の API トークンを使う（`$CF_API_TOKEN`）。`$ACCOUNT_ID` は `GET /accounts` で取得。
+
+```bash
+AUTH=(-H "Authorization: Bearer $CF_API_TOKEN" -H "Content-Type: application/json")
+BASE=https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID
+
+# (a) Service Token 作成（client_id / client_secret を控える。secret は応答時のみ）
+curl -s "${AUTH[@]}" "$BASE/access/service_tokens" -d '{"name":"alpha-strike-status"}'
+
+# (b) Access Application 作成（self_hosted, path=/status）→ 応答の id を APP_ID に
+curl -s "${AUTH[@]}" "$BASE/access/apps" -d '{
+  "name":"alpha-strike status","type":"self_hosted",
+  "domain":"strike.alforgelabs.com/status","session_duration":"24h"
+}'
+
+# (c) /status/events 用に同様にもう 1 アプリ（domain を .../status/events に）
+
+# (d) 各アプリにポリシー（service_token を include）
+curl -s "${AUTH[@]}" "$BASE/access/apps/$APP_ID/policies" -d '{
+  "name":"status service token","decision":"non_identity",
+  "include":[{"service_token":{"token_id":"<SERVICE_TOKEN_ID>"}}]
+}'
+```
+
+> Cloudflare API のフィールド名・エンドポイントはバージョンで変わりうる。最新は [Cloudflare API docs](https://developers.cloudflare.com/api/) で確認。
+
+#### 2-3. 動作確認
+
+```bash
+# CF-Access ヘッダ無し → Cloudflare が 403/ログイン（ネットワーク層で遮断）
+curl -s -o /dev/null -w "%{http_code}\n" https://strike.alforgelabs.com/status
+
+# Access 通過 + Bearer 無し → origin 401（アプリ層で遮断）
+curl -s -o /dev/null -w "%{http_code}\n" https://strike.alforgelabs.com/status \
+  -H "CF-Access-Client-Id: <Client ID>" -H "CF-Access-Client-Secret: <Client Secret>"
+
+# 両方あり → 200 + JSON
+curl -s https://strike.alforgelabs.com/status \
+  -H "CF-Access-Client-Id: <Client ID>" \
+  -H "CF-Access-Client-Secret: <Client Secret>" \
+  -H "Authorization: Bearer <STATUS_API_TOKEN>"
+```
+
+これで「ネットワーク層（Access Service Token）＋アプリ層（Bearer）」の二重防御になる。
 
 ## 環境変数
 
