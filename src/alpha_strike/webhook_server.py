@@ -21,7 +21,7 @@ from pathlib import Path
 from time import perf_counter
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -40,6 +40,11 @@ from alpha_strike.models import (
 from alpha_strike.services.fill_service import FillEventService, _generate_id
 from alpha_strike.services.idempotency import IdempotencyStore
 from alpha_strike.services.order_service import OrderRouter, build_default_router
+from alpha_strike.services.status_auth import require_status_token
+from alpha_strike.services.status_service import (
+    AccountStatus,
+    build_default_status_provider,
+)
 
 load_dotenv()
 
@@ -154,6 +159,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ttl = 600.0
     app.state.idempotency = IdempotencyStore(ttl_seconds=ttl)
     logger.info("idempotency store 初期化 (ttl=%s 秒)", ttl)
+
+    # #57: read-only status API 用の broker status provider
+    app.state.status_provider = build_default_status_provider()
 
     logger.info("Alpha-Strike Webhook サーバー起動完了")
     yield
@@ -472,6 +480,47 @@ async def health_ready() -> dict:
     return JSONResponse(
         status_code=http_status, content={"status": status, "checks": checks}
     )
+
+
+@app.get(
+    "/status",
+    response_model=AccountStatus,
+    dependencies=[Depends(require_status_token)],
+)
+async def get_status(request: Request, trd_env: str | None = Query(default=None)) -> AccountStatus:
+    """口座サマリ・保有建玉・直近注文（実ステータス付き）を返す read-only API (#57)。
+
+    認証: ``Authorization: Bearer <STATUS_API_TOKEN>``（未設定時は 503 で無効）。
+    ``trd_env`` で SIMULATE / REAL を上書き可能（省略時は MOOMOO_TRD_ENV）。
+    """
+    provider = request.app.state.status_provider
+    try:
+        return provider.get_status(trd_env=trd_env)
+    except Exception as exc:  # noqa: BLE001 - broker/OpenD 例外を 502 に変換
+        logger.error("status 取得に失敗: %s", exc)
+        raise HTTPException(
+            status_code=502, detail=f"failed to fetch broker status: {exc}"
+        ) from exc
+
+
+@app.get("/status/events", dependencies=[Depends(require_status_token)])
+async def get_status_events(
+    broker: str | None = Query(default=None),
+    event_type: str | None = Query(default=None),
+    ticker: str | None = Query(default=None),
+    strategy_id: str | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=500),
+) -> dict:
+    """保存済み JSONL イベント（SignalEvent / OrderEvent / FillEvent / TradeClosedEvent）を
+    新しい順で返す read-only API (#57)。認証は /status と同じ Bearer トークン。"""
+    events = event_logger.load_events(
+        broker=broker,
+        event_type=event_type,
+        ticker=ticker,
+        strategy_id=strategy_id,
+        limit=limit,
+    )
+    return {"count": len(events), "events": events}
 
 
 if __name__ == "__main__":  # pragma: no cover - python -m alpha_strike.webhook_server 用
