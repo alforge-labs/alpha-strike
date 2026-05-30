@@ -21,7 +21,14 @@ from pathlib import Path
 from time import perf_counter
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    HTTPException,
+    Query,
+    Request,
+)
 from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -39,6 +46,8 @@ from alpha_strike.models import (
 )
 from alpha_strike.services.fill_service import FillEventService, _generate_id
 from alpha_strike.services.idempotency import IdempotencyStore
+from alpha_strike.services.notifier import NtfyNotifier
+from alpha_strike.services.order_reconcile import reconcile_and_notify
 from alpha_strike.services.order_service import OrderRouter, build_default_router
 from alpha_strike.services.status_auth import require_status_token
 from alpha_strike.services.status_service import (
@@ -163,6 +172,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # #57: read-only status API 用の broker status provider
     app.state.status_provider = build_default_status_provider()
 
+    # #57 Phase 2: 約定 reconcile の ntfy 通知（NTFY_TOPIC 未設定なら no-op）
+    app.state.notifier = NtfyNotifier()
+    try:
+        app.state.reconcile_delay = float(os.getenv("ORDER_RECONCILE_DELAY_SECONDS", "5"))
+    except ValueError:
+        app.state.reconcile_delay = 5.0
+    if app.state.notifier.enabled:
+        logger.info("ntfy 約定通知 有効 (reconcile delay=%ss)", app.state.reconcile_delay)
+
     logger.info("Alpha-Strike Webhook サーバー起動完了")
     yield
     logger.info("Alpha-Strike Webhook サーバー停止")
@@ -181,7 +199,9 @@ app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 @app.post("/webhook", response_model=OrderResult, status_code=200)
 @limiter.limit("10/minute")
 async def receive_webhook(
-    request: Request, payload: WebhookPayload
+    request: Request,
+    payload: WebhookPayload,
+    background_tasks: BackgroundTasks,
 ) -> OrderResult:  # noqa: ARG001
     """TradingViewからのWebhookを受け取り、指定ブローカーへ注文を送信する。
 
@@ -300,6 +320,29 @@ async def receive_webhook(
             _safe_for_log(payload.action),
             _safe_for_log(payload.quantity),
         )
+
+        # #57 Phase 2: moomoo は submission 受理後に実 fill が確定するため、
+        # バックグラウンドで最終 order status を照合して ntfy 通知する。
+        notifier = getattr(request.app.state, "notifier", None)
+        status_provider = getattr(request.app.state, "status_provider", None)
+        if (
+            payload.broker == "moomoo"
+            and broker_order_id
+            and notifier is not None
+            and getattr(notifier, "enabled", False)
+            and status_provider is not None
+        ):
+            background_tasks.add_task(
+                reconcile_and_notify,
+                provider=status_provider,
+                notifier=notifier,
+                broker_order_id=broker_order_id,
+                ticker=payload.ticker,
+                action=payload.action,
+                quantity=payload.quantity,
+                delay_seconds=getattr(request.app.state, "reconcile_delay", 5.0),
+            )
+
         return OrderResult(
             status="success",
             broker=payload.broker,
