@@ -105,16 +105,16 @@ class MoomooStatusProvider:
     def get_status(self, *, trd_env: str | None = None) -> AccountStatus:
         from datetime import datetime, timedelta
 
-        import moomoo  # type: ignore[import-not-found]
+        import futu  # type: ignore[import-not-found]  # 本体と統一 (moomoo と二重 import すると protobuf 重複登録で衝突)
 
         env_str = (trd_env or self.default_trd_env).upper()
         env = (
-            moomoo.TrdEnv.SIMULATE
+            futu.TrdEnv.SIMULATE
             if env_str == "SIMULATE"
-            else moomoo.TrdEnv.REAL
+            else futu.TrdEnv.REAL
         )
-        ctx = moomoo.OpenSecTradeContext(
-            filter_trdmarket=moomoo.TrdMarket.US, host=self.host, port=self.port
+        ctx = futu.OpenSecTradeContext(
+            filter_trdmarket=futu.TrdMarket.US, host=self.host, port=self.port
         )
         try:
             account = self._query_account(ctx, env)
@@ -136,10 +136,10 @@ class MoomooStatusProvider:
 
     @staticmethod
     def _query_account(ctx: Any, env: Any) -> AccountSummary:
-        import moomoo  # type: ignore[import-not-found]
+        import futu  # type: ignore[import-not-found]  # 本体と統一 (moomoo と二重 import すると protobuf 重複登録で衝突)
 
         ret, df = ctx.accinfo_query(trd_env=env)
-        if ret != moomoo.RET_OK or df is None or df.empty:
+        if ret != futu.RET_OK or df is None or df.empty:
             return AccountSummary()
         row = df.iloc[0]
         return AccountSummary(
@@ -153,10 +153,10 @@ class MoomooStatusProvider:
 
     @staticmethod
     def _query_positions(ctx: Any, env: Any) -> list[PositionRecord]:
-        import moomoo  # type: ignore[import-not-found]
+        import futu  # type: ignore[import-not-found]  # 本体と統一 (moomoo と二重 import すると protobuf 重複登録で衝突)
 
         ret, df = ctx.position_list_query(trd_env=env)
-        if ret != moomoo.RET_OK or df is None or df.empty:
+        if ret != futu.RET_OK or df is None or df.empty:
             return []
         out: list[PositionRecord] = []
         for _, row in df.iterrows():
@@ -178,10 +178,10 @@ class MoomooStatusProvider:
     def _query_orders(
         ctx: Any, env: Any, start: str, end: str
     ) -> list[OrderRecord]:
-        import moomoo  # type: ignore[import-not-found]
+        import futu  # type: ignore[import-not-found]  # 本体と統一 (moomoo と二重 import すると protobuf 重複登録で衝突)
 
         ret, df = ctx.order_list_query(trd_env=env, start=start, end=end)
-        if ret != moomoo.RET_OK or df is None or df.empty:
+        if ret != futu.RET_OK or df is None or df.empty:
             return []
         out: list[OrderRecord] = []
         for _, row in df.iterrows():

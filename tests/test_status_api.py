@@ -154,3 +154,18 @@ async def test_status_events_requires_token(client, monkeypatch):
     monkeypatch.setenv("STATUS_API_TOKEN", "secret-token")
     resp = await client.get("/status/events")
     assert resp.status_code == 401
+
+
+def test_status_service_uses_futu_not_moomoo():
+    """回帰防止 (#57): status_service は本体と同じ `futu` を import する。
+
+    `moomoo` を import すると、本体 handlers の `import futu` と同一 SDK が二重ロードされ、
+    protobuf 記述子の重複登録 (duplicate file name Trd_Common.proto) でサーバープロセス内の
+    broker クエリが 502 になる。
+    """
+    import alpha_strike.services.status_service as ss
+    from pathlib import Path
+
+    src = Path(ss.__file__).read_text(encoding="utf-8")
+    assert "import futu" in src
+    assert "import moomoo" not in src
