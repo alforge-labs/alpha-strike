@@ -17,7 +17,6 @@ source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "futu-api" },
-    { name = "moomoo-api" },
     { name = "python-dotenv" },
     { name = "requests" },
     { name = "slowapi" },
@@ -40,7 +39,6 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.135.2" },
     { name = "futu-api", specifier = ">=10.5.6508" },
-    { name = "moomoo-api", specifier = ">=10.5.6508" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "requests", specifier = ">=2.32.5" },
     { name = "slowapi", specifier = ">=0.1.9" },
@@ -464,18 +462,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/d6/54/cfe61301667036ec9
 wheels = [
     { url = "https://files.pythonhosted.org/packages/b3/38/89ba8ad64ae25be8de66a6d463314cf1eb366222074cfda9ee839c56a4b4/mdurl-0.1.2-py3-none-any.whl", hash = "sha256:84008a41e51615a49fc9966191ff91509e3c40b939176e643fd50a5c2196b8f8", size = 9979, upload-time = "2022-08-14T12:40:09.779Z" },
 ]
-
-[[package]]
-name = "moomoo-api"
-version = "10.5.6508"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pandas" },
-    { name = "protobuf" },
-    { name = "pycryptodome" },
-    { name = "simplejson" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/26/57/252af3eef59527e7c902bd7e6c56a454b9e91d130596906536d8b264e821/moomoo_api-10.5.6508.tar.gz", hash = "sha256:5524055d43bad5e041db6c4c590ba65ffad5ac8a7a175efe475973f0fff0b9a7", size = 6197766, upload-time = "2026-05-07T10:32:59.605Z" }
 
 [[package]]
 name = "numpy"
