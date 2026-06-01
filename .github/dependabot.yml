@@ -1,7 +1,9 @@
 version: 2
 updates:
-  # Python パッケージ（uv が pyproject.toml + uv.lock を使うが、Dependabot は pip エコシステムとして扱う）
-  - package-ecosystem: "pip"
+  # Python パッケージ（uv ネイティブ対応。pyproject.toml + uv.lock を直接解釈し、
+  # ロックの確定バージョンを bump する PR を出す。"pip" エコシステムでは uv.lock を
+  # 解釈せず、`futu-api>=...` の下限充足済み指定では PR が出ないため "uv" を使う）
+  - package-ecosystem: "uv"
     directory: "/"
     schedule:
       interval: "weekly"
@@ -13,6 +15,9 @@ updates:
     commit-message:
       prefix: "chore"
       include: "scope"
+    # 公開直後の不安定版で uv がロックできない PR を避けるため数日寝かせる
+    cooldown:
+      default-days: 7
     groups:
       fastapi:
         patterns:
@@ -22,10 +27,12 @@ updates:
       pydantic:
         patterns:
           - "pydantic*"
-      moomoo-sdk:
+      # futu-api は VM の OpenD バイナリとバージョン結合する。CI(FakeProvider)では
+      # OpenD 互換を検証できないため、この PR は auto-merge せず必ず手動レビューし、
+      # docs/ops/futu-opend-upgrade.md の昇格 Runbook(OpenD ロックステップ)に従うこと。
+      futu-sdk:
         patterns:
           - "futu-api"
-          - "moomoo-api"
       test:
         patterns:
           - "pytest*"
