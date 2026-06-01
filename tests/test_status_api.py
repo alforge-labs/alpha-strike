@@ -172,3 +172,27 @@ def test_status_service_uses_futu_not_moomoo():
     src = Path(mod.__file__).read_text(encoding="utf-8")
     assert "import futu" in src
     assert "import moomoo" not in src
+
+
+def test_no_module_imports_moomoo_package():
+    """回帰防止 (#61 の恒久対策): パッケージ全体のどのモジュールも `moomoo` を import しない。
+
+    `futu-api` と `moomoo-api` は同一 SDK の別名で同名 proto を同梱するため、サーバー
+    プロセス内で両方が import されると protobuf 記述子が重複登録され
+    (duplicate file name Trd_Common.proto)、broker クエリが 502 になる。本体は `futu` に
+    統一済みで `moomoo-api` 依存も削除したが、将来どこかで `import moomoo` が再導入されると
+    地雷が再燃するため、`src/` 全体を走査して直接 import が無いことを保証する。
+    `moomoo_handler` のようなモジュール名は word boundary で誤検知しない。
+    """
+    import re
+    from pathlib import Path
+
+    pkg_root = Path(__file__).resolve().parents[1] / "src" / "alpha_strike"
+    pattern = re.compile(r"^\s*(?:import|from)\s+moomoo\b", re.MULTILINE)
+
+    offenders: list[str] = []
+    for py_file in pkg_root.rglob("*.py"):
+        if pattern.search(py_file.read_text(encoding="utf-8")):
+            offenders.append(str(py_file.relative_to(pkg_root)))
+
+    assert not offenders, f"`moomoo` を直接 import しているモジュール: {offenders}"
