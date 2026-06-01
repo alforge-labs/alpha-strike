@@ -1,6 +1,6 @@
 # alpha-strike デプロイ手順（新バージョンの反映）
 
-新しいバージョンを本番 VM（oracle-strike）に反映するための runbook。**初回プロビジョニング**は [vm-provisioning.md](vm-provisioning.md)、**ペーパー go-live チェック**は [paper-trading-go-live.md](paper-trading-go-live.md) を参照。
+新しいバージョンを本番 VM（oracle-strike）に反映するための runbook。**初回プロビジョニング**は [vm-provisioning.md](vm-provisioning.md)、**ペーパー go-live チェック**は [paper-trading-go-live.md](paper-trading-go-live.md)、**futu-api の昇格（OpenD バイナリと結合）と互換台帳**は [futu-opend-upgrade.md](futu-opend-upgrade.md) を参照。
 
 ## デプロイ方式の前提
 
@@ -40,7 +40,10 @@ git push && git push --tags
 ssh oracle-strike
 
 # (a) venv のパッケージを新バージョンへ更新（uv は ~/.local/bin/uv、venv は ubuntu 所有なので sudo 不要）
-~/.local/bin/uv pip install --python /opt/alpha-strike/.venv/bin/python -U "alpha-strike==0.5.0"
+#     futu-api は transitive 依存だが OpenD バイナリと結合するため、互換台帳の既知良ペアを
+#     明示 pin する（無指定だと最新へ勝手に解決されドリフトする）。版は futu-opend-upgrade.md 参照。
+~/.local/bin/uv pip install --python /opt/alpha-strike/.venv/bin/python -U \
+  "alpha-strike==0.6.0" "futu-api==10.06.6608"
 
 # (b) 必要な環境変数を /etc/alpha-strike/.env に追記（root:root 600 のため sudo）
 #     既存値は上書きしないよう sudo nano 等で編集する
