@@ -106,10 +106,14 @@ uv run alpha-strike --reload
 | `MOOMOO_HOST` | moomoo 使用時 | OpenD のホスト（既定 `127.0.0.1`） |
 | `MOOMOO_PORT` | moomoo 使用時 | OpenD のポート（既定 `11111`） |
 | `MOOMOO_TRD_ENV` | moomoo 使用時 | `SIMULATE`（デモ）または `REAL`（本番） |
-| `MOOMOO_TRADE_PWD_MD5` | moomoo 使用時 | 取引パスワード MD5 ハッシュ |
 | `OANDA_API_KEY` | OANDA 使用時 | Personal Access Token |
 | `OANDA_ACCOUNT_ID` | OANDA 使用時 | 口座 ID |
 | `OANDA_ENV` | OANDA 使用時 | `PRACTICE`（デモ）または `LIVE`（本番） |
+| `LIVE_EVENTS_PATH` | — | JSONL イベントログ保存先（既定 `/app/data/events`。docker-compose の volumes と一致させる） |
+| `STATUS_API_TOKEN` | — | `/status`・`/status/events` の Bearer トークン（#57）。未設定時はこれらのエンドポイントを 503 で無効化（fail-safe・デフォルト非公開） |
+| `NTFY_TOPIC` | — | 約定プッシュ通知の ntfy トピック（#57 Phase 2）。未設定なら通知は no-op |
+| `NTFY_SERVER` | — | ntfy サーバー（既定 `https://ntfy.sh`） |
+| `ORDER_RECONCILE_DELAY_SECONDS` | — | 発注後に order status を照合するまでの待機秒数（既定 `5`） |
 
 > **重要**: 検証時は必ず `MOOMOO_TRD_ENV=SIMULATE` / `OANDA_ENV=PRACTICE` を使用してください。本番口座での誤発注は本ソフトウェアの責任範囲外です。
 

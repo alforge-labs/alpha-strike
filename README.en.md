@@ -104,10 +104,14 @@ Full operational procedure for paper-trading production:
 | `MOOMOO_HOST` | moomoo | OpenD host (default `127.0.0.1`) |
 | `MOOMOO_PORT` | moomoo | OpenD port (default `11111`) |
 | `MOOMOO_TRD_ENV` | moomoo | `SIMULATE` (paper) or `REAL` (live) |
-| `MOOMOO_TRADE_PWD_MD5` | moomoo | MD5 of moomoo trading password |
 | `OANDA_API_KEY` | OANDA | Personal Access Token |
 | `OANDA_ACCOUNT_ID` | OANDA | Account ID |
 | `OANDA_ENV` | OANDA | `PRACTICE` (demo) or `LIVE` (production) |
+| `LIVE_EVENTS_PATH` | — | JSONL event-log directory (default `/app/data/events`; match the docker-compose volume mount) |
+| `STATUS_API_TOKEN` | — | Bearer token for `/status` and `/status/events` (#57). When unset, those endpoints are disabled with 503 (fail-safe, private by default) |
+| `NTFY_TOPIC` | — | ntfy topic for fill push notifications (#57 Phase 2). No-op when unset |
+| `NTFY_SERVER` | — | ntfy server (default `https://ntfy.sh`) |
+| `ORDER_RECONCILE_DELAY_SECONDS` | — | Seconds to wait before reconciling order status after submission (default `5`) |
 
 > **Important**: Always use `MOOMOO_TRD_ENV=SIMULATE` / `OANDA_ENV=PRACTICE` for testing. The maintainers are not liable for accidental orders on live accounts.
 
