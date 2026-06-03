@@ -49,6 +49,10 @@ from alpha_strike.services.idempotency import IdempotencyStore
 from alpha_strike.services.notifier import NtfyNotifier
 from alpha_strike.services.order_reconcile import reconcile_order
 from alpha_strike.services.order_service import OrderRouter, build_default_router
+from alpha_strike.services.sell_guard import (
+    is_sell_guard_enabled,
+    resolve_sell_quantity,
+)
 from alpha_strike.services.status_auth import require_status_token
 from alpha_strike.services.status_service import (
     AccountStatus,
@@ -269,6 +273,65 @@ async def receive_webhook(
 
     started_at = perf_counter()
     internal_order_id = _generate_id("ord")
+
+    # over-sell ガード: moomoo の SELL は broker の実保有 (can_sell_qty) を超えないよう
+    # clamp / skip する。Pine→webhook→broker の open-loop desync で実保有を超える SELL
+    # （"Not enough positions"）や建玉ゼロの空売りが届くため、broker 境界で根絶する。
+    # 判定不能（OpenD 障害等）は fail-open で従来通り発注に委ねる。
+    if (
+        is_sell_guard_enabled()
+        and payload.broker == "moomoo"
+        and payload.action == "sell"
+    ):
+        sell_guard_provider = getattr(request.app.state, "status_provider", None)
+        if sell_guard_provider is not None:
+            try:
+                decision = resolve_sell_quantity(payload, sell_guard_provider)
+            except Exception as exc:  # noqa: BLE001 — fail-open（従来通り broker に委ねる）
+                logger.warning(
+                    "sell guard 判定失敗 (fail-open で発注継続): ticker=%s error=%s",
+                    _safe_for_log(payload.ticker),
+                    exc,
+                )
+            else:
+                if decision.action == "skip":
+                    latency_ms = int((perf_counter() - started_at) * 1000)
+                    skip_event = OrderEvent(
+                        event_id=_generate_id("evt"),
+                        signal_id=signal_id,
+                        order_id=internal_order_id,
+                        occurred_at=datetime.now(),
+                        broker=payload.broker,
+                        asset_class=payload.asset_class,
+                        action=payload.action,
+                        ticker=payload.ticker,
+                        quantity=payload.quantity,
+                        status="skipped",
+                        request_latency_ms=latency_ms,
+                        strategy_id=payload.strategy_id,
+                        strategy_version=payload.strategy_version,
+                        snapshot_id=payload.snapshot_id,
+                        run_mode=payload.run_mode,
+                        error_type=None,
+                        portfolio_id=payload.portfolio_id,
+                        sub_strategy_id=payload.sub_strategy_id,
+                    )
+                    event_logger.append(skip_event)
+                    logger.warning("sell skip: %s", decision.reason)
+                    return OrderResult(
+                        status="skipped",
+                        broker=payload.broker,
+                        ticker=payload.ticker,
+                        message=decision.reason,
+                        signal_id=signal_id,
+                        order_id=internal_order_id,
+                        event_id=skip_event.event_id,
+                    )
+                if decision.action == "clamp":
+                    logger.warning("sell clamp: %s", decision.reason)
+                    payload = payload.model_copy(
+                        update={"quantity": decision.quantity}
+                    )
 
     try:
         result = order_router.route(payload)

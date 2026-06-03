@@ -16,6 +16,7 @@ from alpha_strike.services.status_service import (
     AccountStatus,
     AccountSummary,
     OrderRecord,
+    PositionRecord,
 )
 from alpha_strike.webhook_server import app
 
@@ -31,7 +32,11 @@ class _FakeProvider:
             broker="moomoo",
             trd_env="SIMULATE",
             account=AccountSummary(),
-            positions=[],
+            # over-sell ガードが SELL を通すため、対象建玉を保有させる
+            # （本テストの主眼は発注後の reconcile 配線）
+            positions=[
+                PositionRecord(code="US.GLD", qty=1.0, can_sell_qty=1.0)
+            ],
             recent_orders=[
                 OrderRecord(
                     code="US.GLD",

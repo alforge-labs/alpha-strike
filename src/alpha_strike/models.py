@@ -77,7 +77,8 @@ class WebhookPayload(BaseModel):
 
 
 class OrderResult(BaseModel):
-    status: Literal["success", "error"]
+    # skipped: over-sell ガードが broker へ送らず意図的にスキップした（#oversell-guard）
+    status: Literal["success", "error", "skipped"]
     broker: Literal["oanda", "moomoo"]
     ticker: str
     message: str
@@ -126,7 +127,8 @@ class OrderEvent(BaseModel):
     action: Literal["buy", "sell"]
     ticker: str
     quantity: float
-    status: Literal["accepted", "failed"]
+    # skipped: over-sell ガードが broker へ送らず意図的にスキップした（#oversell-guard）
+    status: Literal["accepted", "failed", "skipped"]
     request_latency_ms: int | None = None
     broker_order_id: str | None = None
     strategy_id: str | None = None

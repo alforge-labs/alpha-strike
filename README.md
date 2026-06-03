@@ -106,6 +106,7 @@ uv run alpha-strike --reload
 | `MOOMOO_HOST` | moomoo 使用時 | OpenD のホスト（既定 `127.0.0.1`） |
 | `MOOMOO_PORT` | moomoo 使用時 | OpenD のポート（既定 `11111`） |
 | `MOOMOO_TRD_ENV` | moomoo 使用時 | `SIMULATE`（デモ）または `REAL`（本番） |
+| `MOOMOO_SELL_POSITION_GUARD` | — | moomoo の SELL を broker の実保有 `can_sell_qty` まで clamp（超過分は減量）し、建玉ゼロなら skip する over-sell ガード（既定 `1`=有効）。`0`/`false` で無効化。Pine→webhook→broker の open-loop ズレによる `Not enough positions` を防ぐ |
 | `OANDA_API_KEY` | OANDA 使用時 | Personal Access Token |
 | `OANDA_ACCOUNT_ID` | OANDA 使用時 | 口座 ID |
 | `OANDA_ENV` | OANDA 使用時 | `PRACTICE`（デモ）または `LIVE`（本番） |
