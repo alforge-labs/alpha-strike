@@ -257,7 +257,7 @@ class TestTimeInForce:
     米国株は GTC で発注し、翌営業日寄付での約定を保証する。
     """
 
-    def _execute_and_get_tif(self, monkeypatch, **payload_kwargs):
+    def _execute_and_get_tif(self, **payload_kwargs):
         ctx = _mock_ctx()
         with patch("socket.create_connection"):
             with patch("alpha_strike.handlers.moomoo_handler._get_trade_context", return_value=ctx):
@@ -268,20 +268,20 @@ class TestTimeInForce:
         """米国株はデフォルト GTC。クローズ後注文を翌営業日寄付に持ち越すため。"""
         monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
         monkeypatch.delenv("MOOMOO_TIME_IN_FORCE", raising=False)
-        assert self._execute_and_get_tif(monkeypatch) == futu.TimeInForce.GTC
+        assert self._execute_and_get_tif() == futu.TimeInForce.GTC
 
     def test_index_market_order_uses_gtc(self, monkeypatch):
         """INDEX は US 市場扱い（_MARKET_MAP フォールバック）なので GTC。"""
         monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
         monkeypatch.delenv("MOOMOO_TIME_IN_FORCE", raising=False)
-        tif = self._execute_and_get_tif(monkeypatch, asset_class="INDEX", ticker="US.QQQ")
+        tif = self._execute_and_get_tif(asset_class="INDEX", ticker="US.QQQ")
         assert tif == futu.TimeInForce.GTC
 
     def test_hk_market_order_uses_day(self, monkeypatch):
         """香港市場の成行注文は moomoo 仕様で当日有効のみ → DAY を維持。"""
         monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
         monkeypatch.delenv("MOOMOO_TIME_IN_FORCE", raising=False)
-        tif = self._execute_and_get_tif(monkeypatch, asset_class="HK", ticker="HK.00700")
+        tif = self._execute_and_get_tif(asset_class="HK", ticker="HK.00700")
         assert tif == futu.TimeInForce.DAY
 
     def test_crypto_market_order_uses_day(self, monkeypatch):
@@ -289,7 +289,7 @@ class TestTimeInForce:
         monkeypatch.setenv("MOOMOO_TRD_ENV", "REAL")  # crypto は live only
         monkeypatch.delenv("MOOMOO_TIME_IN_FORCE", raising=False)
         tif = self._execute_and_get_tif(
-            monkeypatch, asset_class="CRYPTO", ticker="CC.BTC", quantity=0.01
+            asset_class="CRYPTO", ticker="CC.BTC", quantity=0.01
         )
         assert tif == futu.TimeInForce.DAY
 
@@ -297,12 +297,13 @@ class TestTimeInForce:
         """MOOMOO_TIME_IN_FORCE=DAY で旧挙動にロールバックできる（運用安全弁）。"""
         monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
         monkeypatch.setenv("MOOMOO_TIME_IN_FORCE", "DAY")
-        assert self._execute_and_get_tif(monkeypatch) == futu.TimeInForce.DAY
+        assert self._execute_and_get_tif() == futu.TimeInForce.DAY
 
     def test_env_override_is_case_insensitive(self, monkeypatch):
+        """小文字 gtc も .upper() 正規化で GTC として解釈される（設定ミスへの寛容性）。"""
         monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
         monkeypatch.setenv("MOOMOO_TIME_IN_FORCE", "gtc")
-        assert self._execute_and_get_tif(monkeypatch) == futu.TimeInForce.GTC
+        assert self._execute_and_get_tif() == futu.TimeInForce.GTC
 
     def test_env_invalid_value_raises_value_error(self, monkeypatch):
         """不正値は黙って DAY に落とさず fail-loud（誤設定での約定ゼロ再発を防ぐ）。"""
