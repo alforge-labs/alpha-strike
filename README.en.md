@@ -104,6 +104,7 @@ Full operational procedure for paper-trading production:
 | `MOOMOO_HOST` | moomoo | OpenD host (default `127.0.0.1`) |
 | `MOOMOO_PORT` | moomoo | OpenD port (default `11111`) |
 | `MOOMOO_TRD_ENV` | moomoo | `SIMULATE` (paper) or `REAL` (live) |
+| `MOOMOO_TIME_IN_FORCE` | — | Time-in-force for US-market MARKET orders (#76). `GTC` (default) carries orders received after the market close over to the next session's open / `DAY` restores the legacy same-day-only behavior (after-close orders expire unfilled). HK / CRYPTO always use `DAY` per moomoo spec and trading-hour characteristics |
 | `MOOMOO_SELL_POSITION_GUARD` | — | Over-sell guard that clamps a moomoo SELL to the broker's actual `can_sell_qty` (trims the excess) and skips it when no position is held (default `1`=on; set `0`/`false` to disable). Prevents `Not enough positions` caused by the open-loop drift in the Pine→webhook→broker pipeline |
 | `OANDA_API_KEY` | OANDA | Personal Access Token |
 | `OANDA_ACCOUNT_ID` | OANDA | Account ID |
