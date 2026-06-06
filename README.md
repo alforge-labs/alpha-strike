@@ -109,6 +109,8 @@ uv run alpha-strike --reload
 | `MOOMOO_TIME_IN_FORCE` | — | 米国市場の成行注文の有効期限（#76）。`GTC`（既定）= 市場クローズ後に受けた注文を翌営業日寄付に持ち越して約定 / `DAY` = 当日のみ有効（旧挙動。クローズ後の注文は約定せず失効する）。HK / CRYPTO は moomoo 仕様・取引時間特性により常に `DAY` |
 | `MOOMOO_SELL_POSITION_GUARD` | — | moomoo の SELL を broker の実保有 `can_sell_qty` まで clamp（超過分は減量）し、建玉ゼロなら skip する over-sell ガード（既定 `1`=有効）。`0`/`false` で無効化。Pine→webhook→broker の open-loop ズレによる `Not enough positions` を防ぐ |
 | `MOOMOO_TARGET_QTY_RECONCILE` | — | payload に `target_qty`（目標絶対保有量）がある場合、broker 実保有との差分から発注数量・方向を再解決する closed-loop 化（#80、既定 `1`=有効）。`0`/`false` で旧 delta 解釈に戻す |
+| `PENDING_RECONCILE_ENABLED` | — | 未終端注文（GTC の翌営業日約定等）を定期再照合し、約定確定を `order_reconciled` イベントに追記する遅延再照合（#79、既定 `1`=有効）。`0`/`false` で無効化 |
+| `PENDING_RECONCILE_INTERVAL_SECONDS` | — | 遅延再照合の実行間隔秒（既定 `600`）。起動直後にも 1 回実行する |
 | `OANDA_API_KEY` | OANDA 使用時 | Personal Access Token |
 | `OANDA_ACCOUNT_ID` | OANDA 使用時 | 口座 ID |
 | `OANDA_ENV` | OANDA 使用時 | `PRACTICE`（デモ）または `LIVE`（本番） |

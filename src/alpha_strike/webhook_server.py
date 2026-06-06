@@ -9,13 +9,14 @@ TradingViewからのアラート（JSON）を受け取り、OANDA証券または
     uv run uvicorn alpha_strike.webhook_server:app --host 0.0.0.0 --port 8080 --reload
 """
 
+import asyncio
 import hmac
 import logging
 import os
 import socket
 import sys
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -49,6 +50,11 @@ from alpha_strike.services.idempotency import IdempotencyStore
 from alpha_strike.services.notifier import NtfyNotifier
 from alpha_strike.services.order_reconcile import reconcile_order
 from alpha_strike.services.order_service import OrderRouter, build_default_router
+from alpha_strike.services.pending_reconcile import (
+    get_pending_reconcile_interval,
+    is_pending_reconcile_enabled,
+    pending_reconcile_loop,
+)
 from alpha_strike.services.sell_guard import (
     is_sell_guard_enabled,
     resolve_sell_quantity,
@@ -189,8 +195,27 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if app.state.notifier.enabled:
         logger.info("ntfy 約定通知 有効 (reconcile delay=%ss)", app.state.reconcile_delay)
 
+    # #79: クローズ後着 GTC 注文の翌営業日約定をイベントログへ反映する遅延再照合。
+    # 起動直後に 1 回（サーバー停止中の約定を即回収）→ 以後 interval ごとに走査。
+    app.state.pending_reconcile_task = None
+    if is_pending_reconcile_enabled():
+        interval = get_pending_reconcile_interval()
+        app.state.pending_reconcile_task = asyncio.create_task(
+            pending_reconcile_loop(
+                provider=app.state.status_provider,
+                event_logger=event_logger,
+                notifier=app.state.notifier,
+                interval_seconds=interval,
+            )
+        )
+        logger.info("pending reconcile 有効 (interval=%ss)", interval)
+
     logger.info("Alpha-Strike Webhook サーバー起動完了")
     yield
+    if app.state.pending_reconcile_task is not None:
+        app.state.pending_reconcile_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await app.state.pending_reconcile_task
     logger.info("Alpha-Strike Webhook サーバー停止")
 
 
