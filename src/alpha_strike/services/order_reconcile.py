@@ -36,6 +36,9 @@ _FAILED_STATUSES = {
     "DISABLED",
     "SUBMIT_FAILED",
 }
+# 状態がもう変化しない終端 status (#79 の遅延再照合が打ち切る基準)。
+# FILLED_PART は残量の約定・キャンセルがあり得るため終端に含めない。
+TERMINAL_STATUSES = {"FILLED_ALL"} | _FAILED_STATUSES
 
 
 def _classify(status: str) -> tuple[str, str | None]:

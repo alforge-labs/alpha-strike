@@ -78,3 +78,5 @@ moomoo の銘柄コードは `US.AAPL`、`HK.00700` 形式。
 | `MOOMOO_TRD_ENV` | `SIMULATE`（デフォルト）または `REAL` |
 | `MOOMOO_TIME_IN_FORCE` | 米国市場の成行注文の有効期限。`GTC`（デフォルト）または `DAY`。HK / CRYPTO は常に `DAY`（#76） |
 | `MOOMOO_TARGET_QTY_RECONCILE` | payload の `target_qty` を broker 実保有との差分で再解決する closed-loop 化（#80）。`1`（デフォルト）または `0` |
+| `PENDING_RECONCILE_ENABLED` | 未終端注文（GTC 翌営業日約定等）の遅延再照合（#79）。`1`（デフォルト）または `0` |
+| `PENDING_RECONCILE_INTERVAL_SECONDS` | 遅延再照合の間隔秒（デフォルト `600`） |
