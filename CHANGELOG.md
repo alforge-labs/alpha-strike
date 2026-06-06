@@ -1,6 +1,138 @@
 # Changelog
 
-AlphaForge の全バージョン変更履歴です。
+alpha-strike の全バージョン変更履歴です。
+
+
+## [0.6.2] - 2026-06-06
+
+
+### その他
+
+- バージョン 0.6.2 にバンプ
+
+
+
+### バグ修正
+
+- **moomoo**: 米国市場の成行注文を GTC で発注しクローズ後注文の約定ゼロを解消 (#77)
+
+
+
+## [0.6.1] - 2026-06-03
+
+
+### その他
+
+- **deps**: bump fastapi from 0.135.2 to 0.136.3 in the fastapi group (#68)
+
+
+- **deps-dev**: bump pytest from 9.0.2 to 9.0.3 in the test group (#70)
+
+
+- **deps-dev**: bump ruff from 0.15.7 to 0.15.14 in the lint group (#71)
+
+
+- **deps**: bump requests from 2.32.5 to 2.34.2 (#72)
+
+
+- バージョン 0.6.1 にバンプ (#75)
+
+
+
+### ドキュメント
+
+- **readme**: 環境変数表を実装に同期（ja/en） (#73)
+
+
+
+### バグ修正
+
+- **deps**: 未使用の moomoo-api 依存を削除し protobuf 二重登録の再燃を防止 (#66)
+
+
+- **sell-guard**: moomoo SELL の over-sell を broker 実保有で clamp/skip (#74)
+
+
+
+## [0.6.0] - 2026-05-30
+
+
+### その他
+
+- バージョン 0.6.0 にバンプ
+
+
+
+### ドキュメント
+
+- **status-api**: Cloudflare Access (/status*) の Service Token 設定手順を追記 (#62)
+
+
+
+### バグ修正
+
+- **codeql**: Code scanning 3 件解消 + .env.op に status_curl 用 op 参照を追加 (#64)
+
+
+
+### 新機能
+
+- **scripts**: status API 運用ヘルパー status_curl.sh を追加 (#63)
+
+
+- **reconcile**: 約定照合結果を OrderReconciledEvent として永続化 (#57) (#65)
+
+
+
+## [0.5.1] - 2026-05-30
+
+
+### その他
+
+- バージョン 0.5.1 にバンプ
+
+
+
+### バグ修正
+
+- **status-service**: SDK import を futu に統一して protobuf 二重登録の 502 を解消 (#61)
+
+
+
+## [0.5.0] - 2026-05-30
+
+
+### その他
+
+- バージョン 0.5.0 にバンプ
+
+
+
+### ドキュメント
+
+- CHANGELOG を v0.4.1 に更新
+
+
+- **ops**: 新バージョン反映のデプロイ runbook を追加 (#60)
+
+
+
+### 新機能
+
+- **moomoo**: CRYPTO + SIMULATE を OpenD 接続前に ValueError で早期拒否 (#54)
+
+
+- **models**: WebhookPayload + 4 event に portfolio_id / sub_strategy_id を追加 (#55)
+
+
+- **scripts**: SIMULATE 保有建玉の成行決済ヘルパー flatten_simulate_positions.py を追加 (#56)
+
+
+- **status-api**: read-only トレード状況 API を追加 (#57 Phase 1) (#58)
+
+
+- **notify**: 約定 reconcile + ntfy プッシュ通知を追加 (#57 Phase 2) (#59)
+
 
 
 ## [0.4.1] - 2026-05-18
