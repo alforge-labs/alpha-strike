@@ -75,7 +75,8 @@
 | `asset_class` | 必須 | アセットクラス |
 | `action` | 必須 | `buy` / `sell` |
 | `ticker` | 必須 | 銘柄コード |
-| `quantity` | 必須 | 注文数量 |
+| `quantity` | 必須 | 注文数量（delta = 増減量。`target_qty` 非対応バージョン向けのフォールバック値） |
+| `target_qty` | 任意 | 目標絶対保有量（`>= 0`、#80）。指定時（moomoo のみ）は broker 実保有との差分から発注数量・方向を再解決する（closed-loop）。`0` は全決済。未指定なら従来どおり `quantity` を delta として発注 |
 | `strategy_id` | 推奨 | `alpha-forge` の戦略ID |
 | `strategy_version` | 推奨 | 戦略バージョン |
 | `snapshot_id` | 推奨 | 戦略スナップショットID |
