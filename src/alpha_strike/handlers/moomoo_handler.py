@@ -78,6 +78,39 @@ def _get_trade_context(
     )
 
 
+def _resolve_time_in_force(asset_class: str) -> "futu.TimeInForce":
+    """成行注文の有効期限（time_in_force）を解決する (#76)。
+
+    TradingView の日足アラート（Once Per Bar Close）はバー確定直後
+    = 市場クローズ後に webhook を送るため、DAY 成行注文は約定機会がなく
+    翌営業日にも持ち越されずに CANCELLED_ALL で失効する。
+    米国市場（US / INDEX / COMMODITY / FX）は GTC で発注し、
+    翌営業日寄付での約定を保証する。
+
+    moomoo 仕様で香港市場の成行注文は当日有効のみのため HK は DAY を維持。
+    CRYPTO は 24/365 取引でクローズ後問題が存在しないため DAY のまま。
+
+    env MOOMOO_TIME_IN_FORCE（既定 GTC）に DAY を指定すると旧挙動に
+    ロールバックできる（運用安全弁）。
+
+    Raises:
+        ValueError: MOOMOO_TIME_IN_FORCE に DAY / GTC 以外が設定されている場合
+    """
+    tif_str = os.getenv("MOOMOO_TIME_IN_FORCE", "GTC").upper()
+    tif_map = {
+        "DAY": futu.TimeInForce.DAY,
+        "GTC": futu.TimeInForce.GTC,
+    }
+    if tif_str not in tif_map:
+        raise ValueError(
+            f"MOOMOO_TIME_IN_FORCE は DAY または GTC を指定してください（現在: {tif_str}）"
+        )
+    # 米国市場以外（HK / CRYPTO）は moomoo 仕様・取引時間特性により DAY 固定
+    if _MARKET_MAP.get(asset_class.upper(), "US") != "US":
+        return futu.TimeInForce.DAY
+    return tif_map[tif_str]
+
+
 class MoomooHandler:
     """moomoo証券（Futu OpenAPI）への注文を実行するハンドラー。"""
 
@@ -123,6 +156,9 @@ class MoomooHandler:
 
         trd_env = trd_env_map[trd_env_str]
         trd_side = futu.TrdSide.BUY if payload.action == "buy" else futu.TrdSide.SELL
+        # クローズ後に届く日足シグナルを翌営業日寄付で約定させるため、
+        # 米国市場の成行注文は GTC で発注する (#76)。OpenD 接続前に解決して fail-fast。
+        time_in_force = _resolve_time_in_force(payload.asset_class)
 
         logger.info(
             "moomoo注文開始: trd_env=%s ticker=%s action=%s qty=%s",
@@ -151,6 +187,7 @@ class MoomooHandler:
                     trd_side=trd_side,
                     order_type=futu.OrderType.MARKET,
                     trd_env=trd_env,
+                    time_in_force=time_in_force,
                 )
 
                 if ret_code != futu.RET_OK:

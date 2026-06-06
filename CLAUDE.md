@@ -76,3 +76,4 @@ moomoo の銘柄コードは `US.AAPL`、`HK.00700` 形式。
 | `MOOMOO_HOST` | OpenD ホスト（デフォルト: `127.0.0.1`）|
 | `MOOMOO_PORT` | OpenD ポート（デフォルト: `11111`）|
 | `MOOMOO_TRD_ENV` | `SIMULATE`（デフォルト）または `REAL` |
+| `MOOMOO_TIME_IN_FORCE` | 米国市場の成行注文の有効期限。`GTC`（デフォルト）または `DAY`。HK / CRYPTO は常に `DAY`（#76） |

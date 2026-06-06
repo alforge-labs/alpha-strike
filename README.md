@@ -106,6 +106,7 @@ uv run alpha-strike --reload
 | `MOOMOO_HOST` | moomoo 使用時 | OpenD のホスト（既定 `127.0.0.1`） |
 | `MOOMOO_PORT` | moomoo 使用時 | OpenD のポート（既定 `11111`） |
 | `MOOMOO_TRD_ENV` | moomoo 使用時 | `SIMULATE`（デモ）または `REAL`（本番） |
+| `MOOMOO_TIME_IN_FORCE` | — | 米国市場の成行注文の有効期限（#76）。`GTC`（既定）= 市場クローズ後に受けた注文を翌営業日寄付に持ち越して約定 / `DAY` = 当日のみ有効（旧挙動。クローズ後の注文は約定せず失効する）。HK / CRYPTO は moomoo 仕様・取引時間特性により常に `DAY` |
 | `MOOMOO_SELL_POSITION_GUARD` | — | moomoo の SELL を broker の実保有 `can_sell_qty` まで clamp（超過分は減量）し、建玉ゼロなら skip する over-sell ガード（既定 `1`=有効）。`0`/`false` で無効化。Pine→webhook→broker の open-loop ズレによる `Not enough positions` を防ぐ |
 | `OANDA_API_KEY` | OANDA 使用時 | Personal Access Token |
 | `OANDA_ACCOUNT_ID` | OANDA 使用時 | 口座 ID |
