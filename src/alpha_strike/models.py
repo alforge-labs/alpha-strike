@@ -14,6 +14,15 @@ class WebhookPayload(BaseModel):
         description="ティッカーシンボル（英大文字・数字・ドット・アンダースコアのみ、20文字以内）",
     )
     quantity: float = Field(gt=0, description="注文数量（株数またはロット数）")
+    target_qty: float | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "目標絶対保有量（closed-loop 数量解決、#80）。指定時（moomoo のみ）は "
+            "broker 実保有との差分から発注数量・方向を再解決する。"
+            "未指定なら quantity を従来どおり delta（増減量）として発注する。"
+        ),
+    )
     strategy_id: str | None = Field(
         default=None,
         pattern=r"^[a-zA-Z0-9_.-]{1,64}$",
@@ -104,6 +113,8 @@ class SignalEvent(BaseModel):
     action: Literal["buy", "sell"]
     ticker: str
     quantity: float
+    # 目標絶対保有量（closed-loop 数量解決、#80）。alert replay の観測性のため記録する
+    target_qty: float | None = None
     strategy_id: str | None = None
     strategy_version: str | None = None
     snapshot_id: str | None = None

@@ -54,6 +54,10 @@ from alpha_strike.services.sell_guard import (
     resolve_sell_quantity,
 )
 from alpha_strike.services.status_auth import require_status_token
+from alpha_strike.services.target_reconcile import (
+    is_target_reconcile_enabled,
+    resolve_target_order,
+)
 from alpha_strike.services.status_service import (
     AccountStatus,
     build_default_status_provider,
@@ -200,6 +204,53 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 
+def _record_skipped_order(
+    payload: WebhookPayload,
+    *,
+    signal_id: str,
+    internal_order_id: str,
+    started_at: float,
+    reason: str,
+) -> OrderResult:
+    """broker へ送らず意図的にスキップした注文を記録し、応答を構築する。
+
+    sell_guard（#74）と target reconcile（#80）の skip 経路で共用。
+    quantity は要求値のまま記録する（記録の透明性）。
+    """
+    latency_ms = int((perf_counter() - started_at) * 1000)
+    skip_event = OrderEvent(
+        event_id=_generate_id("evt"),
+        signal_id=signal_id,
+        order_id=internal_order_id,
+        occurred_at=datetime.now(),
+        broker=payload.broker,
+        asset_class=payload.asset_class,
+        action=payload.action,
+        ticker=payload.ticker,
+        quantity=payload.quantity,
+        status="skipped",
+        request_latency_ms=latency_ms,
+        strategy_id=payload.strategy_id,
+        strategy_version=payload.strategy_version,
+        snapshot_id=payload.snapshot_id,
+        run_mode=payload.run_mode,
+        error_type=None,
+        portfolio_id=payload.portfolio_id,
+        sub_strategy_id=payload.sub_strategy_id,
+    )
+    event_logger.append(skip_event)
+    logger.warning("order skip: %s", reason)
+    return OrderResult(
+        status="skipped",
+        broker=payload.broker,
+        ticker=payload.ticker,
+        message=reason,
+        signal_id=signal_id,
+        order_id=internal_order_id,
+        event_id=skip_event.event_id,
+    )
+
+
 @app.post("/webhook", response_model=OrderResult, status_code=200)
 @limiter.limit("10/minute")
 async def receive_webhook(
@@ -250,6 +301,8 @@ async def receive_webhook(
         action=payload.action,
         ticker=payload.ticker,
         quantity=payload.quantity,
+        # #80: closed-loop 数量解決の入力（再解決前の原シグナルを記録）
+        target_qty=payload.target_qty,
         strategy_id=payload.strategy_id,
         strategy_version=payload.strategy_version,
         snapshot_id=payload.snapshot_id,
@@ -274,6 +327,47 @@ async def receive_webhook(
     started_at = perf_counter()
     internal_order_id = _generate_id("ord")
 
+    # target_qty 再解決 (#80): payload が目標絶対保有量を持つ場合、broker の実保有
+    # との差分から発注 side / quantity を解決する（closed-loop）。open-loop desync で
+    # Pine の delta がズレていても、次のシグナルで実保有が target へ収束する。
+    # 判定不能（OpenD 障害等）は fail-open で従来の delta 解釈にフォールバックする。
+    if payload.target_qty is not None and is_target_reconcile_enabled():
+        if payload.broker != "moomoo":
+            logger.warning(
+                "target_qty は moomoo のみ対応。delta 解釈にフォールバック: "
+                "broker=%s ticker=%s",
+                _safe_for_log(payload.broker),
+                _safe_for_log(payload.ticker),
+            )
+        else:
+            reconcile_provider = getattr(request.app.state, "status_provider", None)
+            if reconcile_provider is not None:
+                try:
+                    target_decision = resolve_target_order(payload, reconcile_provider)
+                except Exception as exc:  # noqa: BLE001 — fail-open（delta のまま発注継続）
+                    logger.warning(
+                        "target reconcile 判定失敗 (fail-open で delta 発注): "
+                        "ticker=%s error=%s",
+                        _safe_for_log(payload.ticker),
+                        exc,
+                    )
+                else:
+                    if target_decision.action == "skip":
+                        return _record_skipped_order(
+                            payload,
+                            signal_id=signal_id,
+                            internal_order_id=internal_order_id,
+                            started_at=started_at,
+                            reason=target_decision.reason,
+                        )
+                    logger.info("target reconcile: %s", target_decision.reason)
+                    payload = payload.model_copy(
+                        update={
+                            "action": target_decision.side,
+                            "quantity": target_decision.quantity,
+                        }
+                    )
+
     # over-sell ガード: moomoo の SELL は broker の実保有 (can_sell_qty) を超えないよう
     # clamp / skip する。Pine→webhook→broker の open-loop desync で実保有を超える SELL
     # （"Not enough positions"）や建玉ゼロの空売りが届くため、broker 境界で根絶する。
@@ -295,37 +389,12 @@ async def receive_webhook(
                 )
             else:
                 if decision.action == "skip":
-                    latency_ms = int((perf_counter() - started_at) * 1000)
-                    skip_event = OrderEvent(
-                        event_id=_generate_id("evt"),
+                    return _record_skipped_order(
+                        payload,
                         signal_id=signal_id,
-                        order_id=internal_order_id,
-                        occurred_at=datetime.now(),
-                        broker=payload.broker,
-                        asset_class=payload.asset_class,
-                        action=payload.action,
-                        ticker=payload.ticker,
-                        quantity=payload.quantity,
-                        status="skipped",
-                        request_latency_ms=latency_ms,
-                        strategy_id=payload.strategy_id,
-                        strategy_version=payload.strategy_version,
-                        snapshot_id=payload.snapshot_id,
-                        run_mode=payload.run_mode,
-                        error_type=None,
-                        portfolio_id=payload.portfolio_id,
-                        sub_strategy_id=payload.sub_strategy_id,
-                    )
-                    event_logger.append(skip_event)
-                    logger.warning("sell skip: %s", decision.reason)
-                    return OrderResult(
-                        status="skipped",
-                        broker=payload.broker,
-                        ticker=payload.ticker,
-                        message=decision.reason,
-                        signal_id=signal_id,
-                        order_id=internal_order_id,
-                        event_id=skip_event.event_id,
+                        internal_order_id=internal_order_id,
+                        started_at=started_at,
+                        reason=decision.reason,
                     )
                 if decision.action == "clamp":
                     logger.warning("sell clamp: %s", decision.reason)

@@ -126,6 +126,30 @@ WAF Custom Rule が Free plan の枠を超える場合や、より柔軟なロ�
 > - `MOOMOO_TRD_ENV=REAL` で少額（0.001 BTC ≈ $80）から開始
 > - alpha-strike を経由せず TradingView Paper Trading 内蔵を使う
 
+**target_qty による closed-loop 数量解決（#80）**
+
+`quantity`（増減量）に加えて任意フィールド `target_qty`（目標絶対保有量、`>= 0`）を併送すると、moomoo では broker 実保有との差分から発注数量・方向が再解決される。送信側の想定保有が 0 約定・部分約定・端数で実保有とズレても、次のシグナルで自動的に収束する。
+
+```json
+{
+  "passphrase": "<WEBHOOK_PASSPHRASE>",
+  "broker": "moomoo",
+  "asset_class": "US",
+  "action": "buy",
+  "ticker": "US.AAPL",
+  "quantity": 10,
+  "target_qty": 47,
+  "run_mode": "paper",
+  "strategy_id": "demo_buy_v1"
+}
+```
+
+> - 実保有 40 → `buy 7` に補正 / 実保有 50 → `sell 3` に補正 / 実保有 47 → skip（broker へ送らない）
+> - `target_qty: 0` は全決済を意味する
+> - `quantity` は `target_qty` 非対応バージョン向けのフォールバック値（増減量）として必須のまま
+> - OANDA はポジション照会未実装のため `target_qty` を無視して従来どおり `quantity` を発注する
+> - 無効化は env `MOOMOO_TARGET_QTY_RECONCILE=0`（旧 delta 解釈へのロールバック）
+
 ### 4-2. OANDA PRACTICE（FX デモ口座）
 
 **USD/JPY 1000 通貨買い**
@@ -354,7 +378,7 @@ make_payload(string action, float qty) =>
 | HTTPステータス | 原因 | 対処 |
 |---|---|---|
 | 401 Unauthorized | `passphrase` 不一致 | `/etc/alpha-strike/.env` の `WEBHOOK_PASSPHRASE` と TradingView Message 欄の値を再確認 |
-| 422 Unprocessable Entity | JSON パース失敗 / Field validation 失敗 | `broker` `action` `run_mode` の値は小文字、`ticker` は `^[A-Z0-9_.]{1,20}$`、`quantity` は正数 |
+| 422 Unprocessable Entity | JSON パース失敗 / Field validation 失敗 | `broker` `action` `run_mode` の値は小文字、`ticker` は `^[A-Z0-9_.]{1,20}$`、`quantity` は正数、`target_qty` は 0 以上 |
 | 429 Too Many Requests | `slowapi` の rate limit (10/min/IP) 超過 | アラート頻度を抑える、または `webhook_server.py:97` の上限を見直す |
 | **503 Service Unavailable** | **Kill switch (maintenance mode) が ON** | サーバー側で `/etc/alpha-strike/MAINTENANCE` ファイルが存在する、もしくは `MAINTENANCE_MODE=1` が設定されている。`sudo rm /etc/alpha-strike/MAINTENANCE` で解除（[paper-trading-go-live.md §5-3](./ops/paper-trading-go-live.md) 参照） |
 | 500 Internal Server Error | broker 認証情報未設定 | `journalctl -u alpha-strike -n 100 --no-pager` でエラー詳細を確認 |
