@@ -6,7 +6,7 @@
 #   2. /webhook (wrong) 401          (passphrase 検証パスの確認)
 #   3. /webhook (real)  200          (実 SIMULATE 発注)
 #   4. show_simulate_status (VM)     (発注の着弾確認)
-#   5. cleanup_simulate_orders (VM)  (テスト発注の取消)
+#   5. テスト発注の後始末 (VM)        (pending は cancel・約定済みは反対売買で相殺)
 #
 # 利用前提:
 #   - Mac から実行する
@@ -106,12 +106,19 @@ ssh "$REMOTE_HOST" "$REMOTE_PYTHON - --days 1" < "$SCRIPT_DIR/show_simulate_stat
   echo "WARN: show_simulate_status の実行に失敗。手動で ssh して確認してください。"
 }
 
-# --- 5. cleanup_simulate_orders (VM) ---
-step "5/5  cleanup_simulate_orders でテスト発注を取消"
-confirm "テスト発注を取り消しますか?" || { echo "skip cleanup"; exit 0; }
+# --- 5. テスト発注の後始末 (VM) ---
+step "5/5  テスト発注の後始末（pending は cancel・約定済みは反対売買で相殺）"
+confirm "テスト発注を後始末しますか?" || { echo "skip cleanup"; exit 0; }
+# 5a. pending 注文を cancel（市場クローズ中はここで取り消される）
 ssh "$REMOTE_HOST" "$REMOTE_PYTHON -" < "$SCRIPT_DIR/cleanup_simulate_orders.py" || {
   echo "WARN: cleanup_simulate_orders の実行に失敗。手動で ssh して確認してください。"
 }
+# 5b. テスト発注が約定していたら（市場時間中）同数量を反対売買して建玉を相殺
+if [[ -n "${ORDER_ID:-}" ]]; then
+  ssh "$REMOTE_HOST" "$REMOTE_PYTHON - --order-id $ORDER_ID" < "$SCRIPT_DIR/flatten_test_order.py" || {
+    echo "WARN: flatten_test_order の実行に失敗。手動で建玉を確認してください。"
+  }
+fi
 
 echo
 echo "==== ✅ go-live スモークテスト完了 ===="
