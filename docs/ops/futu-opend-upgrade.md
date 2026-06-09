@@ -14,6 +14,7 @@
 
 | 確認日 | alpha-strike | futu-api | OpenD バイナリ | 検証 |
 |--------|--------------|----------|----------------|------|
+| 2026-06-09 | 0.7.2 | 10.7.6708 | 10.7.6718 (`moomoo_OpenD_10.7.6718_Ubuntu18.04`) | oracle-strike で 10.7 へ昇格（futu-api / OpenD を 10.7 で揃えた）。**moomoo 10.7 は paper(SIMULATE) の GTC を拒否**するため alpha-strike は SIMULATE→DAY 強制・REAL は GTC 維持 (#88)。VM の futu-api 10.7 プローブで GTC 拒否 / DAY 受理を確認、`go_live_smoke` で 200 確認 |
 | 2026-06-01 | 0.6.0 | 10.06.6608 | 10.5.6508 (`moomoo_OpenD_10.5.6508_Ubuntu18.04`) | oracle-strike で `active` / `/health` OK。SIMULATE は #49 系運用で稼働中 |
 
 > 初期エントリは futu-api が OpenD より先行した状態。問題は出ていないが、**次回昇格時に両者を揃える**のが望ましい。

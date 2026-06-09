@@ -246,15 +246,20 @@ class TestMoomooOrderHandler:
         assert "order_id" in result
 
 
-# --- time_in_force のテスト (#76) ---
+# --- time_in_force のテスト (#76 / moomoo 10.7 paper 制約) ---
 
 class TestTimeInForce:
-    """time_in_force の解決ロジック (#76)。
+    """time_in_force の解決ロジック (#76 / moomoo 10.7)。
 
     TradingView の日足アラート（Once Per Bar Close）はバー確定直後
     = 市場クローズ後に webhook を送るため、DAY 成行注文は約定機会がなく
     翌営業日にも持ち越されずに CANCELLED_ALL で失効する（実運用で確認済み）。
-    米国株は GTC で発注し、翌営業日寄付での約定を保証する。
+    REAL の米国株は GTC で発注し、翌営業日寄付での約定を保証する。
+
+    ただし moomoo 10.7 はペーパートレード（SIMULATE）での GTC を発注時点で
+    拒否する（place_order が "Paper trading does not support GTC orders" を返す）。
+    そのため SIMULATE では市場・env に関わらず DAY を強制し 502 を防ぐ。
+    GTC carry-over は REAL でのみ有効になる。
     """
 
     def _execute_and_get_tif(self, **payload_kwargs):
@@ -264,22 +269,38 @@ class TestTimeInForce:
                 MoomooHandler().execute(_make_payload(**payload_kwargs))
         return ctx.place_order.call_args.kwargs["time_in_force"]
 
-    def test_us_market_order_uses_gtc_by_default(self, monkeypatch):
-        """米国株はデフォルト GTC。クローズ後注文を翌営業日寄付に持ち越すため。"""
-        monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+    def test_real_us_market_order_uses_gtc_by_default(self, monkeypatch):
+        """REAL の米国株はデフォルト GTC。クローズ後注文を翌営業日寄付に持ち越すため。"""
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "REAL")
         monkeypatch.delenv("MOOMOO_TIME_IN_FORCE", raising=False)
         assert self._execute_and_get_tif() == futu.TimeInForce.GTC
 
-    def test_index_market_order_uses_gtc(self, monkeypatch):
-        """INDEX は US 市場扱い（_MARKET_MAP フォールバック）なので GTC。"""
-        monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+    def test_real_index_market_order_uses_gtc(self, monkeypatch):
+        """INDEX は US 市場扱い（_MARKET_MAP フォールバック）なので REAL では GTC。"""
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "REAL")
         monkeypatch.delenv("MOOMOO_TIME_IN_FORCE", raising=False)
         tif = self._execute_and_get_tif(asset_class="INDEX", ticker="US.QQQ")
         assert tif == futu.TimeInForce.GTC
 
-    def test_hk_market_order_uses_day(self, monkeypatch):
-        """香港市場の成行注文は moomoo 仕様で当日有効のみ → DAY を維持。"""
+    def test_simulate_us_market_order_uses_day(self, monkeypatch):
+        """SIMULATE は moomoo 10.7 が GTC を拒否するため US でも DAY を強制する。
+
+        旧挙動（SIMULATE US → GTC）のまま 10.7 へ昇格すると、クローズ後注文が
+        "Paper trading does not support GTC orders" で 502 になる。これを防ぐ。
+        """
         monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+        monkeypatch.delenv("MOOMOO_TIME_IN_FORCE", raising=False)
+        assert self._execute_and_get_tif() == futu.TimeInForce.DAY
+
+    def test_simulate_ignores_gtc_env_and_uses_day(self, monkeypatch):
+        """SIMULATE では MOOMOO_TIME_IN_FORCE=GTC を明示しても DAY に落とす（10.7 制約）。"""
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+        monkeypatch.setenv("MOOMOO_TIME_IN_FORCE", "GTC")
+        assert self._execute_and_get_tif() == futu.TimeInForce.DAY
+
+    def test_hk_market_order_uses_day(self, monkeypatch):
+        """香港市場の成行注文は moomoo 仕様で当日有効のみ → REAL でも DAY を維持。"""
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "REAL")
         monkeypatch.delenv("MOOMOO_TIME_IN_FORCE", raising=False)
         tif = self._execute_and_get_tif(asset_class="HK", ticker="HK.00700")
         assert tif == futu.TimeInForce.DAY
@@ -294,19 +315,19 @@ class TestTimeInForce:
         assert tif == futu.TimeInForce.DAY
 
     def test_env_override_day_restores_legacy_behavior(self, monkeypatch):
-        """MOOMOO_TIME_IN_FORCE=DAY で旧挙動にロールバックできる（運用安全弁）。"""
-        monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+        """REAL US + MOOMOO_TIME_IN_FORCE=DAY で旧挙動にロールバックできる（運用安全弁）。"""
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "REAL")
         monkeypatch.setenv("MOOMOO_TIME_IN_FORCE", "DAY")
         assert self._execute_and_get_tif() == futu.TimeInForce.DAY
 
     def test_env_override_is_case_insensitive(self, monkeypatch):
-        """小文字 gtc も .upper() 正規化で GTC として解釈される（設定ミスへの寛容性）。"""
-        monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+        """小文字 gtc も .upper() 正規化で GTC として解釈される（REAL US で検証）。"""
+        monkeypatch.setenv("MOOMOO_TRD_ENV", "REAL")
         monkeypatch.setenv("MOOMOO_TIME_IN_FORCE", "gtc")
         assert self._execute_and_get_tif() == futu.TimeInForce.GTC
 
     def test_env_invalid_value_raises_value_error(self, monkeypatch):
-        """不正値は黙って DAY に落とさず fail-loud（誤設定での約定ゼロ再発を防ぐ）。"""
+        """不正値は黙って DAY に落とさず fail-loud（SIMULATE でも parse 先行で検証）。"""
         monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
         monkeypatch.setenv("MOOMOO_TIME_IN_FORCE", "INVALID")
         ctx = _mock_ctx()

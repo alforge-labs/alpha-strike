@@ -106,7 +106,7 @@ uv run alpha-strike --reload
 | `MOOMOO_HOST` | moomoo 使用時 | OpenD のホスト（既定 `127.0.0.1`） |
 | `MOOMOO_PORT` | moomoo 使用時 | OpenD のポート（既定 `11111`） |
 | `MOOMOO_TRD_ENV` | moomoo 使用時 | `SIMULATE`（デモ）または `REAL`（本番） |
-| `MOOMOO_TIME_IN_FORCE` | — | 米国市場の成行注文の有効期限（#76）。`GTC`（既定）= 市場クローズ後に受けた注文を翌営業日寄付に持ち越して約定 / `DAY` = 当日のみ有効（旧挙動。クローズ後の注文は約定せず失効する）。HK / CRYPTO は moomoo 仕様・取引時間特性により常に `DAY` |
+| `MOOMOO_TIME_IN_FORCE` | — | **REAL の**米国市場の成行注文の有効期限（#76）。`GTC`（既定）= 市場クローズ後に受けた注文を翌営業日寄付に持ち越して約定 / `DAY` = 当日のみ有効（旧挙動。クローズ後の注文は約定せず失効する）。HK / CRYPTO は moomoo 仕様・取引時間特性により常に `DAY`。**SIMULATE（ペーパー）は moomoo 10.7 が GTC を拒否するため本設定に関わらず常に `DAY`**（GTC carry-over は REAL のみ） |
 | `MOOMOO_SELL_POSITION_GUARD` | — | moomoo の SELL を broker の実保有 `can_sell_qty` まで clamp（超過分は減量）し、建玉ゼロなら skip する over-sell ガード（既定 `1`=有効）。`0`/`false` で無効化。Pine→webhook→broker の open-loop ズレによる `Not enough positions` を防ぐ |
 | `MOOMOO_TARGET_QTY_RECONCILE` | — | payload に `target_qty`（目標絶対保有量）がある場合、broker 実保有との差分から発注数量・方向を再解決する closed-loop 化（#80、既定 `1`=有効）。`0`/`false` で旧 delta 解釈に戻す |
 | `PENDING_RECONCILE_ENABLED` | — | 未終端注文（GTC の翌営業日約定等）を定期再照合し、約定確定を `order_reconciled` イベントに追記する遅延再照合（#79、既定 `1`=有効）。`0`/`false` で無効化 |
