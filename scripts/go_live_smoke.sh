@@ -26,7 +26,10 @@ HEALTH_URL="${HEALTH_URL:-https://strike.alforgelabs.com/health}"
 TICKER="${TICKER:-US.AAPL}"
 QTY="${QTY:-1}"
 REMOTE_HOST="${REMOTE_HOST:-oracle-strike}"
-REMOTE_DIR="${REMOTE_DIR:-/home/ubuntu/dev/alpha-strike}"
+# VM は pip インストールのみで git チェックアウトが無いため、ローカルの
+# ヘルパースクリプトを VM の venv python へ stdin パイプして実行する。
+REMOTE_PYTHON="${REMOTE_PYTHON:-/opt/alpha-strike/.venv/bin/python}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 AUTO_YES=0
 DRY_RUN=0
@@ -99,14 +102,14 @@ echo "broker_order_id: ${ORDER_ID:-<取得失敗>}"
 
 # --- 4. show_simulate_status (VM) ---
 step "4/5  show_simulate_status で着弾確認"
-ssh "$REMOTE_HOST" "cd $REMOTE_DIR && .venv/bin/python scripts/show_simulate_status.py --days 1" || {
+ssh "$REMOTE_HOST" "$REMOTE_PYTHON - --days 1" < "$SCRIPT_DIR/show_simulate_status.py" || {
   echo "WARN: show_simulate_status の実行に失敗。手動で ssh して確認してください。"
 }
 
 # --- 5. cleanup_simulate_orders (VM) ---
 step "5/5  cleanup_simulate_orders でテスト発注を取消"
 confirm "テスト発注を取り消しますか?" || { echo "skip cleanup"; exit 0; }
-ssh "$REMOTE_HOST" "cd $REMOTE_DIR && .venv/bin/python scripts/cleanup_simulate_orders.py" || {
+ssh "$REMOTE_HOST" "$REMOTE_PYTHON -" < "$SCRIPT_DIR/cleanup_simulate_orders.py" || {
   echo "WARN: cleanup_simulate_orders の実行に失敗。手動で ssh して確認してください。"
 }
 

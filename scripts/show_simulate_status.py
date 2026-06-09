@@ -44,13 +44,22 @@ import sys
 import time
 from datetime import datetime, timedelta
 
-from moomoo import (  # type: ignore[import-not-found]
-    OpenSecTradeContext,
-    OrderStatus,
-    RET_OK,
-    TrdEnv,
-    TrdMarket,
-)
+try:
+    from moomoo import (  # type: ignore[import-not-found]
+        OpenSecTradeContext,
+        OrderStatus,
+        RET_OK,
+        TrdEnv,
+        TrdMarket,
+    )
+except ImportError:  # moomoo-api 未導入環境（VM 等）では機能等価の futu-api を使う
+    from futu import (  # type: ignore[import-not-found]
+        OpenSecTradeContext,
+        OrderStatus,
+        RET_OK,
+        TrdEnv,
+        TrdMarket,
+    )
 
 
 @contextlib.contextmanager
