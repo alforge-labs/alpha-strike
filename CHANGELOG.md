@@ -3,6 +3,17 @@
 alpha-strike の全バージョン変更履歴です。
 
 
+## [0.7.2] - 2026-06-09
+
+
+### バグ修正
+
+- **deps**: futu-api を 10.7.6708 へ昇格し protobuf 脆弱性を解消 (#88)
+
+- **moomoo**: SIMULATE は moomoo 10.7 の GTC 拒否を回避するため DAY を強制（paper は GTC 不可・REAL は GTC 維持） (#88)
+
+
+
 ## [0.7.1] - 2026-06-06
 
 
