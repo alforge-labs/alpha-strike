@@ -78,20 +78,26 @@ def _get_trade_context(
     )
 
 
-def _resolve_time_in_force(asset_class: str) -> "futu.TimeInForce":
-    """成行注文の有効期限（time_in_force）を解決する (#76)。
+def _resolve_time_in_force(asset_class: str, trd_env: str) -> "futu.TimeInForce":
+    """成行注文の有効期限（time_in_force）を解決する (#76 / moomoo 10.7)。
 
     TradingView の日足アラート（Once Per Bar Close）はバー確定直後
     = 市場クローズ後に webhook を送るため、DAY 成行注文は約定機会がなく
     翌営業日にも持ち越されずに CANCELLED_ALL で失効する。
-    米国市場（US / INDEX / COMMODITY / FX）は GTC で発注し、
+    REAL の米国市場（US / INDEX / COMMODITY / FX）は GTC で発注し、
     翌営業日寄付での約定を保証する。
+
+    ただし moomoo 10.7 はペーパートレード（SIMULATE）での GTC を発注時点で
+    拒否する（place_order が "Paper trading does not support GTC orders" を返す）。
+    そのため SIMULATE では市場・env 設定に関わらず DAY を強制し、クローズ後
+    シグナルでの 502（RuntimeError）を防ぐ。paper のクローズ後注文は翌寄付へ
+    持ち越せないが、これは moomoo paper の仕様制約で SDK 側では回避できない。
 
     moomoo 仕様で香港市場の成行注文は当日有効のみのため HK は DAY を維持。
     CRYPTO は 24/365 取引でクローズ後問題が存在しないため DAY のまま。
 
-    env MOOMOO_TIME_IN_FORCE（既定 GTC）に DAY を指定すると旧挙動に
-    ロールバックできる（運用安全弁）。
+    env MOOMOO_TIME_IN_FORCE（既定 GTC）に DAY を指定すると REAL の米国市場も
+    旧挙動にロールバックできる（運用安全弁）。SIMULATE では無視される。
 
     Raises:
         ValueError: MOOMOO_TIME_IN_FORCE に DAY / GTC 以外が設定されている場合
@@ -105,6 +111,16 @@ def _resolve_time_in_force(asset_class: str) -> "futu.TimeInForce":
         raise ValueError(
             f"MOOMOO_TIME_IN_FORCE は DAY または GTC を指定してください（現在: {tif_str}）"
         )
+    # moomoo 10.7: ペーパートレード（SIMULATE）は GTC を受け付けない
+    # （"Paper trading does not support GTC orders"）。市場・env に関わらず
+    # DAY を強制し、クローズ後シグナルでの 502 を防ぐ。
+    if trd_env.upper() == "SIMULATE":
+        if tif_str == "GTC":
+            logger.info(
+                "SIMULATE では moomoo 仕様で GTC が使えないため DAY で発注します"
+                "（REAL では GTC carry-over が有効）"
+            )
+        return futu.TimeInForce.DAY
     # 米国市場以外（HK / CRYPTO）は moomoo 仕様・取引時間特性により DAY 固定
     if _MARKET_MAP.get(asset_class.upper(), "US") != "US":
         return futu.TimeInForce.DAY
@@ -157,8 +173,9 @@ class MoomooHandler:
         trd_env = trd_env_map[trd_env_str]
         trd_side = futu.TrdSide.BUY if payload.action == "buy" else futu.TrdSide.SELL
         # クローズ後に届く日足シグナルを翌営業日寄付で約定させるため、
-        # 米国市場の成行注文は GTC で発注する (#76)。OpenD 接続前に解決して fail-fast。
-        time_in_force = _resolve_time_in_force(payload.asset_class)
+        # REAL の米国市場の成行注文は GTC で発注する (#76)。SIMULATE は moomoo 10.7 が
+        # GTC を拒否するため DAY を強制。OpenD 接続前に解決して fail-fast。
+        time_in_force = _resolve_time_in_force(payload.asset_class, trd_env_str)
 
         logger.info(
             "moomoo注文開始: trd_env=%s ticker=%s action=%s qty=%s",
