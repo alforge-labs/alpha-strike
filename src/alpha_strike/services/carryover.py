@@ -27,7 +27,7 @@ from typing import Any
 
 from alpha_strike.models import OrderEvent, SignalCarryoverQueuedEvent, WebhookPayload
 from alpha_strike.services.fill_service import _generate_id
-from alpha_strike.services.market_state import is_market_open
+from alpha_strike.services.market_state import is_market_open, market_open_map
 from alpha_strike.services.order_reconcile import reconcile_order_once
 from alpha_strike.services.sell_guard import is_sell_guard_enabled, resolve_sell_quantity
 from alpha_strike.services.target_reconcile import (
@@ -46,8 +46,15 @@ _TRUTHY = {"1", "true", "yes", "on"}
 DEFAULT_INTERVAL_SECONDS = 300.0
 DEFAULT_LOOKBACK_HOURS = 48.0
 DEFAULT_MAX_RESUBMITS = 3
+# queued イベントの走査上限（lookback_hours と二重の安全弁）。日次シグナルは数十件/日
+# 程度のため 500 で 10 日分以上をカバーする。
 _SCAN_LIMIT = 500
-_CO_SUFFIX = "_co"
+# 解消判定に使う order_recorded の走査上限。queued より大きめに取り、バックテスト等で
+# 一時的に発注イベントが急増しても古い accepted(=解消マーカー)を取りこぼさないようにする。
+_ORDER_SCAN_LIMIT = 2000
+# carry-over 再発注の signal_id サフィックス。ユーザー signal_id との衝突（偽解消）を
+# 避けるため衝突しにくい語にする。
+_CO_SUFFIX = "__carryover"
 
 # moomoo_handler._MARKET_MAP と同じく US 以外（HK / CRYPTO）を判別する。
 # US / INDEX / COMMODITY / FX は US 市場扱い。
@@ -178,7 +185,7 @@ def find_carryover_intents(
         broker="moomoo", event_type="signal_carryover_queued", limit=_SCAN_LIMIT
     )
     orders = event_logger.load_events(
-        broker="moomoo", event_type="order_recorded", limit=_SCAN_LIMIT
+        broker="moomoo", event_type="order_recorded", limit=_ORDER_SCAN_LIMIT
     )
 
     resolved_co: set[str] = set()
@@ -405,6 +412,10 @@ def _resubmit_intent(
         logger.warning(
             "carryover 再発注に失敗: %s %s: %s", payload.ticker, payload.action, exc
         )
+        # 失敗した試行は注文を出していない。冪等キーを解放して次スイープで即リトライ
+        # 可能にする（TTL 満了まで ~30 分リトライが止まり、failed カウントも進まないのを防ぐ）。
+        if idempotency is not None:
+            idempotency.forget(co_id)
         _record_order(
             event_logger, payload, signal_id=co_id,
             internal_order_id=internal_order_id, status="failed",
@@ -496,10 +507,14 @@ def run_carryover_resubmit_once(
     if not to_resubmit:
         return 0
 
+    # 市場オープン判定はスイープ先頭で 1 回だけ（intent 件数分の OpenD 接続を避ける）。
+    open_map = market_open_map(
+        market_state_provider, [str(i.get("ticker", "")) for i in to_resubmit]
+    )
     resubmitted = 0
     for intent in to_resubmit:
         ticker = str(intent.get("ticker", ""))
-        if is_market_open(market_state_provider, ticker) is not True:
+        if not open_map.get(ticker, False):
             continue  # まだオープンしていない / 判定不能 → 次スイープで再試行
         if _resubmit_intent(
             intent,

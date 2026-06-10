@@ -16,11 +16,12 @@ from alpha_strike.event_logger import JsonlEventLogger
 from alpha_strike.models import OrderEvent, SignalCarryoverQueuedEvent, WebhookPayload
 from alpha_strike.services.carryover import (
     DEFAULT_MAX_RESUBMITS,
+    _co_signal_id,
     build_carryover_queued_event,
+    carryover_resubmit_loop,
     find_carryover_intents,
     run_carryover_resubmit_once,
     should_carryover,
-    carryover_resubmit_loop,
 )
 from alpha_strike.services.fill_service import FillEventService
 from alpha_strike.services.idempotency import IdempotencyStore
@@ -206,7 +207,7 @@ def test_find_resolved_intent_excluded(tmp_path):
     """co の order_recorded(accepted) があれば解消済み＝再発注しない（二重発注防止の要）。"""
     logger = JsonlEventLogger(base_path=tmp_path)
     _seed_queued(logger, "20260608-093000")
-    _seed_order_recorded(logger, "20260608-093000_co", status="accepted")
+    _seed_order_recorded(logger, _co_signal_id("20260608-093000"), status="accepted")
     to_resubmit, _ = find_carryover_intents(logger)
     assert to_resubmit == []
 
@@ -215,7 +216,7 @@ def test_find_skipped_intent_excluded(tmp_path):
     """co の order_recorded(skipped)（target 到達/建玉なし）も解消とみなす。"""
     logger = JsonlEventLogger(base_path=tmp_path)
     _seed_queued(logger, "20260608-093000")
-    _seed_order_recorded(logger, "20260608-093000_co", status="skipped")
+    _seed_order_recorded(logger, _co_signal_id("20260608-093000"), status="skipped")
     to_resubmit, _ = find_carryover_intents(logger)
     assert to_resubmit == []
 
@@ -235,7 +236,7 @@ def test_find_max_resubmits_abandoned(tmp_path):
     logger = JsonlEventLogger(base_path=tmp_path)
     _seed_queued(logger, "sig-fail")
     for _ in range(DEFAULT_MAX_RESUBMITS):
-        _seed_order_recorded(logger, "sig-fail_co", status="failed")
+        _seed_order_recorded(logger, _co_signal_id("sig-fail"), status="failed")
     to_resubmit, to_abandon = find_carryover_intents(logger, max_resubmits=DEFAULT_MAX_RESUBMITS)
     assert to_resubmit == []
     assert [e["signal_id"] for e in to_abandon] == ["sig-fail"]
@@ -316,7 +317,7 @@ def test_run_idempotency_blocks_double_submit(tmp_path):
     router = _FakeRouter()
     ms = _FakeMarketState({"US.TLT": "AFTERNOON"})
     idem = IdempotencyStore()
-    idem.check_and_record("20260608-093000_co")  # 既に発注済み相当
+    idem.check_and_record(_co_signal_id("20260608-093000"))  # 既に発注済み相当
     n = run_carryover_resubmit_once(
         market_state_provider=ms, status_provider=_status_provider(), event_logger=logger,
         order_router=router, fill_service=FillEventService(logger), idempotency=idem,
@@ -356,7 +357,48 @@ def test_run_failed_resubmit_records_failed(tmp_path):
     )
     assert n == 0
     failed = logger.load_events(broker="moomoo", event_type="order_recorded")
-    assert any(e["signal_id"] == "sig-x_co" and e["status"] == "failed" for e in failed)
+    assert any(
+        e["signal_id"] == _co_signal_id("sig-x") and e["status"] == "failed" for e in failed
+    )
+
+
+def test_run_retry_after_failed_not_blocked_by_idempotency(tmp_path):
+    """route 失敗後は冪等キーを解放し、次スイープで即リトライする（TTL 満了まで ~30 分止めない）。
+
+    WHY: 失敗試行は注文を出していないため、broker の一時障害から open 中に回復したら
+    速やかに再発注したい。failed カウントも進むので max_resubmits の打ち切りも機能する。"""
+    logger = JsonlEventLogger(base_path=tmp_path)
+    _seed_queued(logger, "sig-retry")
+    router = _FakeRouter(raises=True)
+    ms = _FakeMarketState({"US.TLT": "AFTERNOON"})
+    idem = IdempotencyStore(ttl_seconds=600)
+    kwargs = dict(
+        market_state_provider=ms, status_provider=_status_provider(), event_logger=logger,
+        order_router=router, fill_service=FillEventService(logger), idempotency=idem,
+    )
+    run_carryover_resubmit_once(**kwargs)
+    run_carryover_resubmit_once(**kwargs)
+    assert len(router.calls) == 2  # TTL 内でも 2 回呼ばれる（forget で解放）
+
+
+def test_run_target_reconcile_resolves_side_and_qty(tmp_path):
+    """target_qty 付き intent は再発注時に open 時点の実保有との差分で side/qty を再解決する (#80 継承)。"""
+    logger = JsonlEventLogger(base_path=tmp_path)
+    _seed_queued(logger, "sig-t", action="buy", qty=5.0, target_qty=3.0)
+    router = _FakeRouter()
+    ms = _FakeMarketState({"US.TLT": "AFTERNOON"})
+    # 実保有 1・target 3 → buy 2 に再解決される
+    prov = _status_provider(
+        positions=[PositionRecord(code="US.TLT", qty=1.0, can_sell_qty=1.0)],
+        orders=[OrderRecord(code="US.TLT", order_id="br_999", order_status="FILLED_ALL", dealt_qty=2.0)],
+    )
+    n = run_carryover_resubmit_once(
+        market_state_provider=ms, status_provider=prov, event_logger=logger,
+        order_router=router, fill_service=FillEventService(logger), idempotency=IdempotencyStore(),
+    )
+    assert n == 1
+    assert router.calls[0].action == "buy"
+    assert router.calls[0].quantity == 2.0
 
 
 # --- loop ----------------------------------------------------------------

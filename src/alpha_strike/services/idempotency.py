@@ -52,6 +52,16 @@ class IdempotencyStore:
             self._data[signal_id] = now
             return True
 
+    def forget(self, signal_id: str) -> None:
+        """記録済みの ``signal_id`` を破棄する。
+
+        carry-over 再発注 (#89) が ``route()`` 失敗時に呼ぶ。失敗した試行は注文を
+        出していないため、次スイープで即リトライできるよう冪等キーを解放する
+        （TTL 満了まで 30 分リトライが止まるのを防ぐ）。存在しないキーは無視。
+        """
+        with self._lock:
+            self._data.pop(signal_id, None)
+
     def _evict_expired(self, now: float) -> None:
         cutoff = now - self.ttl_seconds
         # 全件スキャン: TTL を超えたものを削除。

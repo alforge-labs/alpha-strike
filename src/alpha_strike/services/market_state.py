@@ -84,6 +84,25 @@ def is_market_open(provider: MarketStateProvider, ticker: str) -> bool | None:
     return state.upper() in US_OPEN_MARKET_STATES
 
 
+def market_open_map(
+    provider: MarketStateProvider, tickers: list[str]
+) -> dict[str, bool]:
+    """複数 ticker の open 判定を **1 回の** ``get_market_state`` でまとめて返す。
+
+    carry-over 再発注 (#89) のスイープで intent ごとに OpenD 接続を張らないための
+    バッチ版。取得失敗 / 応答に無い ticker は ``False``（fail-safe = 再発注しない）。
+    """
+    uniq = list(dict.fromkeys(tickers))
+    if not uniq:
+        return {}
+    try:
+        states = provider.get_market_state(uniq)
+    except Exception as exc:  # noqa: BLE001 — 取得失敗は全 False（再発注しない）
+        logger.warning("market state 一括取得失敗: %s", exc)
+        return {t: False for t in uniq}
+    return {t: str(states.get(t, "")).upper() in US_OPEN_MARKET_STATES for t in uniq}
+
+
 def build_default_market_state_provider() -> MarketStateProvider:
     """環境変数からデフォルトの MarketStateProvider を構築する。"""
     return MoomooMarketStateProvider()
