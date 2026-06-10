@@ -45,8 +45,18 @@ from alpha_strike.models import (
     TradeClosedPayload,
     WebhookPayload,
 )
+from alpha_strike.services.carryover import (
+    build_carryover_queued_event,
+    carryover_resubmit_loop,
+    get_carryover_interval,
+    get_carryover_lookback_hours,
+    get_carryover_max_resubmits,
+    is_carryover_enabled,
+    should_carryover,
+)
 from alpha_strike.services.fill_service import FillEventService, _generate_id
 from alpha_strike.services.idempotency import IdempotencyStore
+from alpha_strike.services.market_state import build_default_market_state_provider
 from alpha_strike.services.notifier import NtfyNotifier
 from alpha_strike.services.order_reconcile import reconcile_order
 from alpha_strike.services.order_service import OrderRouter, build_default_router
@@ -210,12 +220,39 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         logger.info("pending reconcile 有効 (interval=%ss)", interval)
 
+    # #89: クローズ後着の SIMULATE シグナルを次の市場オープンで自動約定させる carry-over。
+    # moomoo SIMULATE は GTC/DAY のどちらでも post-close を翌寄付に約定させられないため、
+    # app 層で「市場オープン時に未解消 intent を route 経由で再発注」する常駐ループを起動する。
+    app.state.market_state_provider = build_default_market_state_provider()
+    app.state.carryover_resubmit_task = None
+    if is_carryover_enabled():
+        co_interval = get_carryover_interval()
+        app.state.carryover_resubmit_task = asyncio.create_task(
+            carryover_resubmit_loop(
+                market_state_provider=app.state.market_state_provider,
+                status_provider=app.state.status_provider,
+                event_logger=event_logger,
+                order_router=app.state.order_router,
+                fill_service=app.state.fill_service,
+                idempotency=app.state.idempotency,
+                notifier=app.state.notifier,
+                interval_seconds=co_interval,
+                lookback_hours=get_carryover_lookback_hours(),
+                max_resubmits=get_carryover_max_resubmits(),
+            )
+        )
+        logger.info("carryover 再発注 有効 (interval=%ss)", co_interval)
+
     logger.info("Alpha-Strike Webhook サーバー起動完了")
     yield
     if app.state.pending_reconcile_task is not None:
         app.state.pending_reconcile_task.cancel()
         with suppress(asyncio.CancelledError):
             await app.state.pending_reconcile_task
+    if app.state.carryover_resubmit_task is not None:
+        app.state.carryover_resubmit_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await app.state.carryover_resubmit_task
     logger.info("Alpha-Strike Webhook サーバー停止")
 
 
@@ -273,6 +310,32 @@ def _record_skipped_order(
         signal_id=signal_id,
         order_id=internal_order_id,
         event_id=skip_event.event_id,
+    )
+
+
+def _record_carryover_queued(payload: WebhookPayload, *, signal_id: str) -> OrderResult:
+    """クローズ後着シグナルを carry-over キューへ入れ（broker へ送らず）応答を構築する (#89)。
+
+    moomoo SIMULATE はクローズ後の成行を翌寄付に約定させられないため、原シグナルを
+    ``SignalCarryoverQueuedEvent`` として永続化する。``carryover_resubmit_loop`` が次の市場
+    オープンで ``order_router.route`` 経由（sell_guard/target_reconcile を継承）で再発注する。
+    """
+    queued_event = build_carryover_queued_event(payload, signal_id)
+    event_logger.append(queued_event)
+    logger.info(
+        "carry-over queued: %s %s qty=%s (signal_id=%s) — 次の市場オープンで再発注",
+        _safe_for_log(payload.ticker),
+        _safe_for_log(payload.action),
+        _safe_for_log(payload.quantity),
+        _safe_for_log(signal_id),
+    )
+    return OrderResult(
+        status="success",
+        broker=payload.broker,
+        ticker=payload.ticker,
+        message="carry-over queued — 次の市場オープンで再発注します",
+        signal_id=signal_id,
+        event_id=queued_event.event_id,
     )
 
 
@@ -351,6 +414,18 @@ async def receive_webhook(
 
     started_at = perf_counter()
     internal_order_id = _generate_id("ord")
+
+    # carry-over (#89): SIMULATE の moomoo US 系シグナルがクローズ後に届いた場合、broker に
+    # 投げると DAY が失効する（GTC も SIMULATE では約定しない）。market が明確にクローズ中と
+    # 判定できたら、原シグナルを queued イベントとして永続化して 200 を返し、
+    # carryover_resubmit_loop が次の市場オープンで route 経由（sell_guard/target_reconcile を
+    # 継承）で再発注する。判定不能 / 開場中 / REAL / 非 US は従来どおり即発注する。
+    # guards は再発注時に open 時点の実保有で評価させるため、ここでは原シグナルを保持する。
+    market_state_provider = getattr(request.app.state, "market_state_provider", None)
+    if market_state_provider is not None and should_carryover(
+        payload, market_state_provider, trd_env=os.getenv("MOOMOO_TRD_ENV", "SIMULATE")
+    ):
+        return _record_carryover_queued(payload, signal_id=signal_id)
 
     # target_qty 再解決 (#80): payload が目標絶対保有量を持つ場合、broker の実保有
     # との差分から発注 side / quantity を解決する（closed-loop）。open-loop desync で
