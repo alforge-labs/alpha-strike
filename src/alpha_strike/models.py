@@ -240,6 +240,45 @@ class OrderReconciledEvent(BaseModel):
     sub_strategy_id: str | None = None
 
 
+class SignalCarryoverQueuedEvent(BaseModel):
+    """クローズ後着の SIMULATE シグナルを次の市場オープンへ持ち越す保留イベント (#89)。
+
+    moomoo SIMULATE は GTC を約定させられず DAY もクローズ後は失効するため、米国市場の
+    クローズ後に届いたシグナルは broker へ投げず本イベントとして永続化し、
+    carryover 再発注ループが次のオープンで ``order_router.route`` 経由で再発注する。
+
+    ``carryover_state``:
+      - ``queued``: 再発注待ち。後続に signal_id ``f"{signal_id}_co"`` の order_recorded
+        (status=accepted) が現れれば「解消済み」とみなす（last-wins・append-only）。
+      - ``abandoned``: 再発注上限超過 / stale などで打ち切り。
+
+    下流（forge live replay / alpha-visualizer Live）は本イベントを **未約定の保留** として
+    扱い equity に計上しない（約定の権威イベントは従来どおり order_reconciled）。
+    """
+
+    event_type: Literal["signal_carryover_queued"] = "signal_carryover_queued"
+    event_id: str
+    signal_id: str
+    occurred_at: datetime
+    broker: Literal["oanda", "moomoo"]
+    asset_class: Literal["FX", "COMMODITY", "US", "HK", "INDEX", "CRYPTO"]
+    action: Literal["buy", "sell"]
+    ticker: str
+    quantity: float
+    target_qty: float | None = None
+    carryover_state: Literal["queued", "abandoned"] = "queued"
+    strategy_id: str | None = None
+    strategy_version: str | None = None
+    snapshot_id: str | None = None
+    timeframe: str | None = None
+    alert_timestamp: datetime | None = None
+    run_mode: Literal["paper", "live"] = "live"
+    alert_name: str | None = None
+    # alpha-forge issue #980
+    portfolio_id: str | None = None
+    sub_strategy_id: str | None = None
+
+
 class TradeClosedPayload(BaseModel):
     passphrase: str = Field(repr=False)
     signal_id: str

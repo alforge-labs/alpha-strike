@@ -52,7 +52,7 @@ def _classify(status: str) -> tuple[str, str | None]:
     return "hourglass", None
 
 
-async def reconcile_order(
+def reconcile_order_once(
     *,
     provider: Any,
     event_logger: Any,
@@ -71,23 +71,16 @@ async def reconcile_order(
     run_mode: str = "live",
     portfolio_id: str | None = None,
     sub_strategy_id: str | None = None,
-    delay_seconds: float = 5.0,
-    trd_env: str | None = None,
 ) -> None:
-    """発注後 ``delay_seconds`` 待ってから OpenD の最終 order status を照合する。
+    """OpenD の最終 order status を **同期で** 照合し権威イベントを永続化する。
 
-    照合結果を ``OrderReconciledEvent`` として **常に** 永続化し（データ正確性は通知の
-    有効/無効に依存しない）、``notifier`` が有効なら ntfy 通知する。
-
-    バックグラウンドタスクとして呼ばれる前提。例外は握りつぶしてログに残す
-    （reconcile/通知の失敗でサーバーを落とさない）。
+    ``provider.get_status`` は OpenD への blocking I/O のため、イベントループ上から
+    呼ぶ場合は ``asyncio.to_thread`` 経由にすること（async ラッパー ``reconcile_order``
+    参照）。carry-over 再発注 (#89) は専用の background loop スレッド内から本関数を
+    直接呼ぶ。例外は握りつぶしてログに残す（reconcile/通知の失敗でサーバーを落とさない）。
     """
     try:
-        if delay_seconds > 0:
-            await asyncio.sleep(delay_seconds)
-        # provider.get_status は OpenD への blocking I/O。イベントループを塞がない
-        # ようスレッドへ退避する。
-        status = await asyncio.to_thread(provider.get_status)
+        status = provider.get_status()
 
         order = next(
             (o for o in status.recent_orders if str(o.order_id) == str(broker_order_id)),
@@ -155,5 +148,63 @@ async def reconcile_order(
                     tags=[tag],
                     priority=priority,
                 )
+    except Exception as exc:  # noqa: BLE001 - reconcile/通知失敗はサーバーを落とさない
+        logger.warning("order reconcile に失敗しました: %s", exc)
+
+
+async def reconcile_order(
+    *,
+    provider: Any,
+    event_logger: Any,
+    notifier: Any = None,
+    broker_order_id: str,
+    signal_id: str,
+    order_id: str,
+    broker: str,
+    asset_class: str,
+    ticker: str,
+    action: str,
+    quantity: float,
+    strategy_id: str | None = None,
+    strategy_version: str | None = None,
+    snapshot_id: str | None = None,
+    run_mode: str = "live",
+    portfolio_id: str | None = None,
+    sub_strategy_id: str | None = None,
+    delay_seconds: float = 5.0,
+    trd_env: str | None = None,  # noqa: ARG001 — 互換のため残置（provider 既定環境を使用）
+) -> None:
+    """発注後 ``delay_seconds`` 待ってから OpenD の最終 order status を照合する。
+
+    照合結果を ``OrderReconciledEvent`` として **常に** 永続化し（データ正確性は通知の
+    有効/無効に依存しない）、``notifier`` が有効なら ntfy 通知する。実体は同期の
+    ``reconcile_order_once`` を ``asyncio.to_thread`` で実行する。
+
+    バックグラウンドタスクとして呼ばれる前提。例外は握りつぶしてログに残す。
+    """
+    try:
+        if delay_seconds > 0:
+            await asyncio.sleep(delay_seconds)
+        # blocking I/O をイベントループから退避する。
+        await asyncio.to_thread(
+            reconcile_order_once,
+            provider=provider,
+            event_logger=event_logger,
+            notifier=notifier,
+            broker_order_id=broker_order_id,
+            signal_id=signal_id,
+            order_id=order_id,
+            broker=broker,
+            asset_class=asset_class,
+            ticker=ticker,
+            action=action,
+            quantity=quantity,
+            strategy_id=strategy_id,
+            strategy_version=strategy_version,
+            snapshot_id=snapshot_id,
+            run_mode=run_mode,
+            portfolio_id=portfolio_id,
+            sub_strategy_id=sub_strategy_id,
+        )
     except Exception as exc:  # noqa: BLE001 - reconcile/通知失敗はサーバーを落とさない
         logger.warning("order reconcile に失敗しました: %s", exc)

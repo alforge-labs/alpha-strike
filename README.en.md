@@ -104,11 +104,15 @@ Full operational procedure for paper-trading production:
 | `MOOMOO_HOST` | moomoo | OpenD host (default `127.0.0.1`) |
 | `MOOMOO_PORT` | moomoo | OpenD port (default `11111`) |
 | `MOOMOO_TRD_ENV` | moomoo | `SIMULATE` (paper) or `REAL` (live) |
-| `MOOMOO_TIME_IN_FORCE` | — | Time-in-force for **REAL** US-market MARKET orders (#76). `GTC` (default) carries orders received after the market close over to the next session's open / `DAY` restores the legacy same-day-only behavior (after-close orders expire unfilled). HK / CRYPTO always use `DAY` per moomoo spec and trading-hour characteristics. **SIMULATE (paper) always uses `DAY` regardless of this setting because moomoo 10.7 rejects GTC for paper trading** (GTC carry-over applies to REAL only) |
+| `MOOMOO_TIME_IN_FORCE` | — | Time-in-force for **REAL** US-market MARKET orders (#76). `GTC` (default) carries orders received after the market close over to the next session's open / `DAY` restores the legacy same-day-only behavior (after-close orders expire unfilled). HK / CRYPTO always use `DAY` per moomoo spec and trading-hour characteristics. **SIMULATE (paper) always uses `DAY` regardless of this setting because moomoo 10.7 rejects GTC for paper trading**. SIMULATE after-close signals would expire as DAY, so `CARRYOVER_*` (#89) re-submits them at the next market open to fill them |
 | `MOOMOO_SELL_POSITION_GUARD` | — | Over-sell guard that clamps a moomoo SELL to the broker's actual `can_sell_qty` (trims the excess) and skips it when no position is held (default `1`=on; set `0`/`false` to disable). Prevents `Not enough positions` caused by the open-loop drift in the Pine→webhook→broker pipeline |
 | `MOOMOO_TARGET_QTY_RECONCILE` | — | When the payload carries `target_qty` (absolute target holding), re-resolves the order side/quantity against the broker's actual position (closed-loop, #80; default `1`=on). Set `0`/`false` to fall back to the legacy delta interpretation |
 | `PENDING_RECONCILE_ENABLED` | — | Periodically re-reconciles non-terminal orders (e.g. GTC orders that fill on the next trading day) and appends the confirmed fill as an `order_reconciled` event (#79; default `1`=on). Set `0`/`false` to disable |
 | `PENDING_RECONCILE_INTERVAL_SECONDS` | — | Sweep interval in seconds (default `600`). Also runs once immediately at startup |
+| `CARRYOVER_ENABLED` | — | **SIMULATE only**: carry-over emulation that re-submits US-market after-close signals at the next market open (#89; default `1`=on). Set `0`/`false` to disable. Disabled internally for REAL (which has GTC carry-over) |
+| `CARRYOVER_RESUBMIT_INTERVAL_SECONDS` | — | Carry-over re-submit sweep interval in seconds (default `300`). Also runs once immediately at startup |
+| `CARRYOVER_LOOKBACK_HOURS` | — | Expiry of a queued intent in hours (default `48`). Older intents are abandoned as stale rather than re-submitted (covers weekend gaps) |
+| `CARRYOVER_MAX_RESUBMITS` | — | Max re-submit attempts per intent (default `3`). Intents exceeding this are abandoned (prevents repeated misfires) |
 | `OANDA_API_KEY` | OANDA | Personal Access Token |
 | `OANDA_ACCOUNT_ID` | OANDA | Account ID |
 | `OANDA_ENV` | OANDA | `PRACTICE` (demo) or `LIVE` (production) |

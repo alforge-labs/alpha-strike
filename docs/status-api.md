@@ -179,4 +179,4 @@ moomoo の発注後、`ORDER_RECONCILE_DELAY_SECONDS`（既定 5 秒）待って
 | `NTFY_SERVER` | ntfy サーバー（既定 https://ntfy.sh） |
 | `ORDER_RECONCILE_DELAY_SECONDS` | 発注から status 照合までの待機秒数（既定 5） |
 
-> 成行注文は市場開場時間中のみ約定する。**REAL の**米国市場はクローズ後に受けた注文を GTC で翌営業日寄付に持ち越すため（#76、`MOOMOO_TIME_IN_FORCE` 既定 `GTC`）、休場中の発注は reconcile 時点では pending（`SUBMITTED`）と表示され、翌営業日寄付で約定する。`DAY` 指定時（旧挙動）は持ち越されず cancelled になる。**SIMULATE（ペーパー）は moomoo 10.7 が GTC を拒否するため常に `DAY` で発注され、クローズ後シグナルは翌寄付に持ち越されず失効する（moomoo paper の仕様制約）。**
+> 成行注文は市場開場時間中のみ約定する。**REAL の**米国市場はクローズ後に受けた注文を GTC で翌営業日寄付に持ち越すため（#76、`MOOMOO_TIME_IN_FORCE` 既定 `GTC`）、休場中の発注は reconcile 時点では pending（`SUBMITTED`）と表示され、翌営業日寄付で約定する。`DAY` 指定時（旧挙動）は持ち越されず cancelled になる。**SIMULATE（ペーパー）は moomoo 10.7 が GTC を拒否するため常に `DAY` で発注される。クローズ後シグナルは DAY 失効するが、carry-over エミュレーション（#89、`CARRYOVER_*`）が broker へ投げる代わりに `signal_carryover_queued` イベントとして保留し、次の市場オープンで `order_router.route` 経由で自動再発注する。再発注後の約定追跡は従来どおり `order_reconciled`（権威）／#79 が担う。`signal_carryover_queued` は未約定の保留イベントで equity には計上しない。**
