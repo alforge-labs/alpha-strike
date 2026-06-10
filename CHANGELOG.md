@@ -3,6 +3,15 @@
 alpha-strike の全バージョン変更履歴です。
 
 
+## [0.8.0] - 2026-06-10
+
+
+### 新機能
+
+- **carryover**: クローズ後の SIMULATE シグナルを次の市場オープンで自動再発注して約定させる carry-over エミュレーション (#89)。moomoo SIMULATE は GTC/DAY のどちらでも post-close を翌寄付に約定させられないため、app 層で「市場オープン時に未解消 intent を route 経由で再発注」する
+
+
+
 ## [0.7.2] - 2026-06-09
 
 
