@@ -9,7 +9,7 @@
 uv sync
 
 # サーバー起動（開発）
-uv run uvicorn webhook_server:app --host 0.0.0.0 --port 8080 --reload
+uv run uvicorn alpha_strike.webhook_server:app --host 0.0.0.0 --port 8080 --reload
 
 # テスト実行
 uv run pytest
@@ -25,9 +25,11 @@ uv run ruff check .
 
 TradingView → `POST /webhook` → `webhook_server.py` → `OrderRouter` → `BrokerHandler` → 証券会社 API
 
+ソースは src layout（`src/alpha_strike/`）。以下のパスはすべて `src/alpha_strike/` からの相対。
+
 **エントリーポイント**:
 - `webhook_server.py` — FastAPI アプリ定義（サーバー本体）
-- `main.py` — PyInstaller バイナリ用ラッパー（uvicorn.run を直接呼び出す）
+- `cli.py` — `alpha-strike` CLI（PyPI インストール後の起動エントリポイント）
 
 **ブローカーハンドラー** (`handlers/`):
 - `base.py` — `BrokerHandler` Protocol（DIP 用抽象インターフェース）
@@ -37,6 +39,14 @@ TradingView → `POST /webhook` → `webhook_server.py` → `OrderRouter` → `B
 **サービス** (`services/`):
 - `order_service.py` — `OrderRouter`（Strategy パターン）: ブローカー名で対応ハンドラーへ委譲。`build_default_router()` で初期化。
 - `fill_service.py` — `FillEventService`（SRP）: `FillEvent` 構築・FIFO 配分・`TradeClosedEvent` 生成。
+- `idempotency.py` — `IdempotencyStore`: `signal_id` の重複 webhook を拒否。
+- `sell_guard.py` — over-sell ガード（#74）: SELL 数量を broker 実保有でクランプ。
+- `target_reconcile.py` — `target_qty` closed-loop 化（#80）: payload の目標数量と実保有の差分で発注数量を再解決。
+- `market_state.py` — 市場オープン/クローズ判定（#89）: OpenD `get_market_state` ベース、`MarketStateProvider` Protocol で Fake 注入可。
+- `carryover.py` — クローズ後シグナルの carry-over（#89）: SIMULATE で失効する注文を queue し、次の市場オープンで再発注するループ。
+- `order_reconcile.py` / `pending_reconcile.py` — 約定照合と未終端注文（GTC 翌営業日約定等）の遅延再照合（#79）。
+- `status_service.py` / `status_auth.py` — 口座ステータス API（`/status`）とそのトークン認証。
+- `notifier.py` — ntfy 通知。
 
 **データモデル** (`models.py`):
 - `WebhookPayload` — リクエストの入力スキーマ（`broker: Literal["oanda", "moomoo"]`）
@@ -76,7 +86,10 @@ moomoo の銘柄コードは `US.AAPL`、`HK.00700` 形式。
 | `MOOMOO_HOST` | OpenD ホスト（デフォルト: `127.0.0.1`）|
 | `MOOMOO_PORT` | OpenD ポート（デフォルト: `11111`）|
 | `MOOMOO_TRD_ENV` | `SIMULATE`（デフォルト）または `REAL` |
-| `MOOMOO_TIME_IN_FORCE` | 米国市場の成行注文の有効期限。`GTC`（デフォルト）または `DAY`。HK / CRYPTO は常に `DAY`（#76） |
+| `MOOMOO_TIME_IN_FORCE` | REAL の米国市場成行注文の有効期限。`GTC`（デフォルト）または `DAY`。HK / CRYPTO は常に `DAY`（#76）。**SIMULATE は moomoo 10.7 がペーパートレードの GTC を拒否するため、設定に関わらず `DAY` を強制**（#88） |
 | `MOOMOO_TARGET_QTY_RECONCILE` | payload の `target_qty` を broker 実保有との差分で再解決する closed-loop 化（#80）。`1`（デフォルト）または `0` |
 | `PENDING_RECONCILE_ENABLED` | 未終端注文（GTC 翌営業日約定等）の遅延再照合（#79）。`1`（デフォルト）または `0` |
 | `PENDING_RECONCILE_INTERVAL_SECONDS` | 遅延再照合の間隔秒（デフォルト `600`） |
+| `CARRYOVER_ENABLED` | クローズ後シグナルの carry-over 再発注ループ（#89）。`1`（デフォルト）または `0` |
+| `CARRYOVER_RESUBMIT_INTERVAL_SECONDS` / `CARRYOVER_LOOKBACK_HOURS` / `CARRYOVER_MAX_RESUBMITS` | carry-over ループの間隔・遡及窓・再発注上限 |
+| `STATUS_API_TOKEN` | `/status` API の Bearer トークン |
