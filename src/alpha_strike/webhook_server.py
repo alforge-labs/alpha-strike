@@ -36,6 +36,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from alpha_strike.event_logger import JsonlEventLogger
+from alpha_strike.log_sanitize import safe_for_log
 from alpha_strike.models import (
     EventIngestResult,
     OrderEvent,
@@ -90,28 +91,6 @@ logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address)
 event_logger = JsonlEventLogger()
-
-
-# Log Injection 対策: ユーザー提供の文字列をログに出力する前に
-# 改行・タブ・NULL などの制御文字を除去する（CodeQL: py/log-injection）。
-_LOG_SANITIZE_TABLE = str.maketrans(
-    "",
-    "",
-    "".join(chr(c) for c in range(0x20)) + "\x7f",
-)
-
-
-def _safe_for_log(value: object, max_len: int = 100) -> str:
-    """ログ出力用に安全化した文字列を返す。
-
-    - 改行 / タブ / NULL 等の制御文字 (0x00-0x1F, 0x7F) を除去
-    - ``max_len`` 文字に切り詰める（過大なログを防ぐ）
-    - 非文字列は ``str()`` で文字列化してからサニタイズ
-    """
-    s = str(value).translate(_LOG_SANITIZE_TABLE)
-    if len(s) > max_len:
-        s = s[:max_len] + "..."
-    return s
 
 
 DEFAULT_MAINTENANCE_FILE = "/etc/alpha-strike/MAINTENANCE"
@@ -324,10 +303,10 @@ def _record_carryover_queued(payload: WebhookPayload, *, signal_id: str) -> Orde
     event_logger.append(queued_event)
     logger.info(
         "carry-over queued: %s %s qty=%s (signal_id=%s) — 次の市場オープンで再発注",
-        _safe_for_log(payload.ticker),
-        _safe_for_log(payload.action),
-        _safe_for_log(payload.quantity),
-        _safe_for_log(signal_id),
+        safe_for_log(payload.ticker),
+        safe_for_log(payload.action),
+        safe_for_log(payload.quantity),
+        safe_for_log(signal_id),
     )
     return OrderResult(
         status="success",
@@ -367,9 +346,9 @@ async def receive_webhook(
         if not idem.check_and_record(payload.signal_id):
             logger.warning(
                 "idempotency: duplicate signal_id rejected (signal_id=%s broker=%s ticker=%s)",
-                _safe_for_log(payload.signal_id),
-                _safe_for_log(payload.broker),
-                _safe_for_log(payload.ticker),
+                safe_for_log(payload.signal_id),
+                safe_for_log(payload.broker),
+                safe_for_log(payload.ticker),
             )
             return OrderResult(
                 status="success",
@@ -406,10 +385,10 @@ async def receive_webhook(
 
     logger.info(
         "Webhook受信: broker=%s ticker=%s action=%s qty=%s",
-        _safe_for_log(payload.broker),
-        _safe_for_log(payload.ticker),
-        _safe_for_log(payload.action),
-        _safe_for_log(payload.quantity),
+        safe_for_log(payload.broker),
+        safe_for_log(payload.ticker),
+        safe_for_log(payload.action),
+        safe_for_log(payload.quantity),
     )
 
     started_at = perf_counter()
@@ -436,8 +415,8 @@ async def receive_webhook(
             logger.warning(
                 "target_qty は moomoo のみ対応。delta 解釈にフォールバック: "
                 "broker=%s ticker=%s",
-                _safe_for_log(payload.broker),
-                _safe_for_log(payload.ticker),
+                safe_for_log(payload.broker),
+                safe_for_log(payload.ticker),
             )
         else:
             reconcile_provider = getattr(request.app.state, "status_provider", None)
@@ -448,7 +427,7 @@ async def receive_webhook(
                     logger.warning(
                         "target reconcile 判定失敗 (fail-open で delta 発注): "
                         "ticker=%s error=%s",
-                        _safe_for_log(payload.ticker),
+                        safe_for_log(payload.ticker),
                         exc,
                     )
                 else:
@@ -484,7 +463,7 @@ async def receive_webhook(
             except Exception as exc:  # noqa: BLE001 — fail-open（従来通り broker に委ねる）
                 logger.warning(
                     "sell guard 判定失敗 (fail-open で発注継続): ticker=%s error=%s",
-                    _safe_for_log(payload.ticker),
+                    safe_for_log(payload.ticker),
                     exc,
                 )
             else:
@@ -547,10 +526,10 @@ async def receive_webhook(
 
         logger.info(
             "注文成功: broker=%s ticker=%s action=%s qty=%s",
-            _safe_for_log(payload.broker),
-            _safe_for_log(payload.ticker),
-            _safe_for_log(payload.action),
-            _safe_for_log(payload.quantity),
+            safe_for_log(payload.broker),
+            safe_for_log(payload.ticker),
+            safe_for_log(payload.action),
+            safe_for_log(payload.quantity),
         )
 
         # #57 Phase 2: moomoo は submission 受理後に実 fill が確定するため、
@@ -652,9 +631,9 @@ async def receive_webhook(
         )
         logger.error(
             "注文失敗: broker=%s ticker=%s error=%s",
-            _safe_for_log(payload.broker),
-            _safe_for_log(payload.ticker),
-            _safe_for_log(e),
+            safe_for_log(payload.broker),
+            safe_for_log(payload.ticker),
+            safe_for_log(e),
             exc_info=True,
         )
         raise HTTPException(
@@ -698,9 +677,9 @@ async def ingest_trade_closed_event(
 
     logger.info(
         "trade_closed 保存: broker=%s ticker=%s trade_id=%s",
-        _safe_for_log(payload.broker),
-        _safe_for_log(payload.ticker),
-        _safe_for_log(payload.trade_id),
+        safe_for_log(payload.broker),
+        safe_for_log(payload.ticker),
+        safe_for_log(payload.trade_id),
     )
     return EventIngestResult(
         status="accepted",
