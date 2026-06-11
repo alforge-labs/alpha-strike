@@ -7,6 +7,8 @@ WHY: carry-over 再発注は「市場が開場中か」の判定に依存する�
 
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from alpha_strike.services.market_state import is_market_open
@@ -49,3 +51,16 @@ def test_provider_failure_returns_none():
 def test_case_insensitive_state():
     """SDK が小文字/混在で返しても AFTERNOON を open と判定する（堅牢性）。"""
     assert is_market_open(_FakeProvider({"US.AAPL": "afternoon"}), "US.AAPL") is True
+
+
+def test_provider_failure_log_sanitizes_ticker(caplog):
+    """ticker は webhook payload 由来で攻撃者が制御可能 (CodeQL py/log-injection)。
+    改行入り ticker を生のまま warning に流すと偽のログ行を注入できるため、
+    取得失敗ログでは制御文字を除去して出力する。"""
+    evil_ticker = "US.AAPL\n[CRITICAL] 偽ログ注入"
+    with caplog.at_level(logging.WARNING, logger="alpha_strike.services.market_state"):
+        assert is_market_open(_FakeProvider(raises=True), evil_ticker) is None
+    messages = [r.getMessage() for r in caplog.records]
+    assert messages, "取得失敗時は warning ログが出ること"
+    assert all("\n" not in m for m in messages)
+    assert any("US.AAPL" in m for m in messages)

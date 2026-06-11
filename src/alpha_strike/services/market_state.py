@@ -17,6 +17,8 @@ import logging
 import os
 from typing import Protocol
 
+from alpha_strike.log_sanitize import safe_for_log
+
 logger = logging.getLogger(__name__)
 
 # US 通常立会 (RTH) を表す moomoo MarketState（実機検証で AFTERNOON を確認）。
@@ -76,7 +78,8 @@ def is_market_open(provider: MarketStateProvider, ticker: str) -> bool | None:
     try:
         states = provider.get_market_state([ticker])
     except Exception as exc:  # noqa: BLE001 — 取得失敗は None（不明）で返す
-        logger.warning("market state 取得失敗 (%s): %s", ticker, exc)
+        # ticker は webhook payload 由来でユーザーが制御可能 (CodeQL: py/log-injection)
+        logger.warning("market state 取得失敗 (%s): %s", safe_for_log(ticker), exc)
         return None
     state = states.get(ticker)
     if state is None:
