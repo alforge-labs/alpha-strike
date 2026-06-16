@@ -91,5 +91,5 @@ moomoo の銘柄コードは `US.AAPL`、`HK.00700` 形式。
 | `PENDING_RECONCILE_ENABLED` | 未終端注文（GTC 翌営業日約定等）の遅延再照合（#79）。`1`（デフォルト）または `0` |
 | `PENDING_RECONCILE_INTERVAL_SECONDS` | 遅延再照合の間隔秒（デフォルト `600`） |
 | `CARRYOVER_ENABLED` | クローズ後シグナルの carry-over 再発注ループ（#89）。`1`（デフォルト）または `0` |
-| `CARRYOVER_RESUBMIT_INTERVAL_SECONDS` / `CARRYOVER_LOOKBACK_HOURS` / `CARRYOVER_MAX_RESUBMITS` | carry-over ループの間隔・遡及窓・再発注上限 |
+| `CARRYOVER_RESUBMIT_INTERVAL_SECONDS` / `CARRYOVER_LOOKBACK_HOURS` / `CARRYOVER_MAX_RESUBMITS` | carry-over ループの間隔・遡及窓・再発注上限。遡及窓は土日（市場休場）を除いた実効時間で計測するため、金曜クローズ後シグナルも週末をまたいで再発注される（祝日は対象外） |
 | `STATUS_API_TOKEN` | `/status` API の Bearer トークン |

@@ -222,13 +222,45 @@ def test_find_skipped_intent_excluded(tmp_path):
 
 
 def test_find_stale_intent_abandoned(tmp_path):
-    """lookback(48h) 超の queued は stale として打ち切り。古い intent を突然約定させない。"""
+    """実効 lookback(48h、土日除外) 超の queued は stale として打ち切り。古い intent を
+    突然約定させない。now を固定し平日のみで 50h 経過させる(土日非依存の決定論テスト)。"""
     logger = JsonlEventLogger(base_path=tmp_path)
-    old = datetime.now() - timedelta(hours=50)
+    now = datetime(2026, 6, 17, 10, 0)  # 水曜
+    old = now - timedelta(hours=50)  # 月曜 08:00（土日を挟まず実効 50h）
     _seed_queued(logger, "old-sig", occurred_at=old)
-    to_resubmit, to_abandon = find_carryover_intents(logger, lookback_hours=48)
+    to_resubmit, to_abandon = find_carryover_intents(logger, lookback_hours=48, now=now)
     assert to_resubmit == []
     assert [e["signal_id"] for e in to_abandon] == ["old-sig"]
+
+
+def test_find_friday_signal_survives_weekend(tmp_path):
+    """金曜クローズ後シグナルは土日(市場休場)を挟んでも実効 48h 以内なら再発注対象。
+
+    暦では金17:00→月10:00=65h(>48)だが、土日48hを除けば実効17h。土日を除外しないと
+    週末跨ぎシグナルが月曜寄付前に stale 判定され取りこぼされる(本 PR が直す回帰)。
+    """
+    logger = JsonlEventLogger(base_path=tmp_path)
+    fri = datetime(2026, 6, 12, 17, 0)  # 金曜 17:00（クローズ後）
+    mon = datetime(2026, 6, 15, 10, 0)  # 月曜 10:00 に評価
+    _seed_queued(logger, "20260612-093000", occurred_at=fri)
+    to_resubmit, to_abandon = find_carryover_intents(logger, lookback_hours=48, now=mon)
+    assert [e["signal_id"] for e in to_resubmit] == ["20260612-093000"]
+    assert to_abandon == []
+
+
+def test_find_stale_over_business_hours_abandoned(tmp_path):
+    """土日を除いた実効時間が lookback 超なら、週末跨ぎでも abandon する。
+
+    金17:00→火18:00 は実効 49h(金7h+月24h+火18h、土日除外) > 48 → 古すぎる intent は
+    打ち切る(週末除外が「無期限に再発注」へ緩むのを防ぐ)。
+    """
+    logger = JsonlEventLogger(base_path=tmp_path)
+    fri = datetime(2026, 6, 12, 17, 0)  # 金曜 17:00
+    tue = datetime(2026, 6, 16, 18, 0)  # 火曜 18:00 に評価（実効 49h）
+    _seed_queued(logger, "old-fri", occurred_at=fri)
+    to_resubmit, to_abandon = find_carryover_intents(logger, lookback_hours=48, now=tue)
+    assert to_resubmit == []
+    assert [e["signal_id"] for e in to_abandon] == ["old-fri"]
 
 
 def test_find_max_resubmits_abandoned(tmp_path):
