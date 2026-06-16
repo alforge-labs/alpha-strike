@@ -3,23 +3,75 @@
 alpha-strike の全バージョン変更履歴です。
 
 
+## [0.8.1] - 2026-06-16
+
+
+### その他
+
+- **deps-dev**: bump pytest-asyncio in the test group (#86)
+
+
+- **deps-dev**: bump ruff from 0.15.14 to 0.15.15 in the lint group (#87)
+
+
+- bumpversion の current_version を実態(v0.8.0)に同期
+
+
+- バージョン 0.8.1 にバンプ
+
+
+
+### ドキュメント
+
+- CLAUDE.md を v0.8 の実態に追随 (#98)
+
+
+
+### バグ修正
+
+- **security**: CodeQL py/log-injection #36 を修正（market_state の ticker ログをサニタイズ） (#97)
+
+
+- **carryover**: lookback を土日除外の実効時間で計測し週末跨ぎの取りこぼしを解消 (#100)
+
+
+
 ## [0.8.0] - 2026-06-10
+
+
+### その他
+
+- **release**: v0.8.0 (#96)
+
+
+
+### バグ修正
+
+- 依存脆弱性4件の解消 + go_live_smoke の VM パス/SDK 修正 (#93)
+
 
 
 ### 新機能
 
-- **carryover**: クローズ後の SIMULATE シグナルを次の市場オープンで自動再発注して約定させる carry-over エミュレーション (#89)。moomoo SIMULATE は GTC/DAY のどちらでも post-close を翌寄付に約定させられないため、app 層で「市場オープン時に未解消 intent を route 経由で再発注」する
+- **smoke**: go_live_smoke の step 5 を self-clean 化（約定済みテスト発注を相殺） (#94)
+
+
+- **carryover**: クローズ後 SIMULATE シグナルを翌オープンで自動約定 (#89) (#95)
 
 
 
 ## [0.7.2] - 2026-06-09
 
 
+### その他
+
+- **deps**: starlette を 1.0.0 から 1.2.1 へ更新 (#85)
+
+
+
 ### バグ修正
 
-- **deps**: futu-api を 10.7.6708 へ昇格し protobuf 脆弱性を解消 (#88)
-
-- **moomoo**: SIMULATE は moomoo 10.7 の GTC 拒否を回避するため DAY を強制（paper は GTC 不可・REAL は GTC 維持） (#88)
+- futu-api 10.7 昇格（protobuf 解消）+ SIMULATE→DAY フォールバック (v0.7.2) (#88)
 
 
 
@@ -28,7 +80,7 @@ alpha-strike の全バージョン変更履歴です。
 
 ### その他
 
-- バージョン 0.7.1 にバンプ
+- **release**: v0.7.1 (#84)
 
 
 
