@@ -14,6 +14,7 @@
 
 | 確認日 | alpha-strike | futu-api | OpenD バイナリ | 検証 |
 |--------|--------------|----------|----------------|------|
+| 2026-06-16 | 0.8.1 | 10.7.6708 | 10.7.6718 (`moomoo_OpenD_10.7.6718_Ubuntu18.04`) | carry-over lookback を土日除外の実効時間化し週末跨ぎの取りこぼしを解消 (#100)。SDK / OpenD は不変（futu-api / OpenD 10.7 ペア維持）。VM デプロイ後 `systemctl is-active`=active・`/status` 200 を確認。直後に GLD 83 株が target 通り約定しヘッジ回復（TQQQ 175 + GLD 83） |
 | 2026-06-10 | 0.8.0 | 10.7.6708 | 10.7.6718 (`moomoo_OpenD_10.7.6718_Ubuntu18.04`) | carry-over エミュレーション (#89) 追加。同一 futu-api / OpenD 10.7 ペアで動作（SDK/OpenD は不変）。市場オープン判定 `OpenQuoteContext.get_market_state` を VM 実機で確認（US=AFTERNOON=open）。デプロイ後に carry-over loop 起動ログ + `go_live_smoke` で検証 |
 | 2026-06-09 | 0.7.2 | 10.7.6708 | 10.7.6718 (`moomoo_OpenD_10.7.6718_Ubuntu18.04`) | oracle-strike で 10.7 へ昇格（futu-api / OpenD を 10.7 で揃えた）。**moomoo 10.7 は paper(SIMULATE) の GTC を拒否**するため alpha-strike は SIMULATE→DAY 強制・REAL は GTC 維持 (#88)。VM の futu-api 10.7 プローブで GTC 拒否 / DAY 受理を確認、`go_live_smoke` で 200 確認 |
 | 2026-06-01 | 0.6.0 | 10.06.6608 | 10.5.6508 (`moomoo_OpenD_10.5.6508_Ubuntu18.04`) | oracle-strike で `active` / `/health` OK。SIMULATE は #49 系運用で稼働中 |
