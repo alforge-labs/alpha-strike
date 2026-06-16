@@ -106,6 +106,32 @@ def _co_signal_id(signal_id: str) -> str:
     return f"{signal_id}{_CO_SUFFIX}"
 
 
+def _weekend_hours_between(start: datetime, end: datetime) -> float:
+    """``start``〜``end`` に含まれる土日(市場休場)の時間数を返す。
+
+    carry-over の lookback を「市場が動いている実効時間」で測るために使う。金曜
+    クローズ後シグナルは翌月曜寄付まで暦では 48h を超えるが、その大半は土日(市場
+    休場)で実効では数時間しか経っていない。土日を除外しないと週末跨ぎシグナルが
+    寄付前に stale 判定され取りこぼされる。祝日は考慮しない(YAGNI。必要なら
+    market_state 連携で拡張)。
+    """
+    if end <= start:
+        return 0.0
+    total = 0.0
+    cur = start
+    while cur < end:
+        day_end = min(
+            end,
+            (cur + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            ),
+        )
+        if cur.weekday() >= 5:  # 5=土, 6=日
+            total += (day_end - cur).total_seconds() / 3600.0
+        cur = day_end
+    return total
+
+
 def should_carryover(
     payload: WebhookPayload,
     market_state_provider: Any,
@@ -167,6 +193,7 @@ def find_carryover_intents(
     *,
     lookback_hours: float = DEFAULT_LOOKBACK_HOURS,
     max_resubmits: int = DEFAULT_MAX_RESUBMITS,
+    now: datetime | None = None,
 ) -> tuple[list[dict], list[dict]]:
     """未解消の carry-over intent を返す。
 
@@ -174,7 +201,7 @@ def find_carryover_intents(
         ``(to_resubmit, to_abandon)``。
         - ``to_resubmit``: 受信時刻 ASC（古い順）の未解消 intent。delta シグナルの順序を
           保つため受信順に再発注する。
-        - ``to_abandon``: 再発注上限超過 / stale（lookback 超）で打ち切る intent。
+        - ``to_abandon``: 再発注上限超過 / stale（実効 lookback 超＝土日除外）で打ち切る intent。
 
     解消判定（append-only・last-wins）:
       - queued ``X`` に対し ``f"{X}_co"`` の order_recorded が accepted/skipped → 解消（除外）
@@ -204,7 +231,7 @@ def find_carryover_intents(
         if e.get("carryover_state") == "abandoned"
     }
 
-    cutoff = datetime.now() - timedelta(hours=lookback_hours)
+    current = now if now is not None else datetime.now()
     seen: set[str] = set()
     to_resubmit: list[dict] = []
     to_abandon: list[dict] = []
@@ -224,8 +251,12 @@ def find_carryover_intents(
             occurred = datetime.fromisoformat(str(e.get("occurred_at")))
         except (TypeError, ValueError):
             continue
-        if occurred < cutoff:
-            to_abandon.append(e)  # stale: 古すぎる intent は打ち切り
+        # lookback は「市場が動いている実効時間」で測る。暦時間で測ると金曜クローズ後
+        # シグナルが土日(市場休場)だけで 48h を超え、月曜寄付前に stale 化して取りこぼす。
+        elapsed_hours = (current - occurred).total_seconds() / 3600.0
+        effective_hours = elapsed_hours - _weekend_hours_between(occurred, current)
+        if effective_hours > lookback_hours:
+            to_abandon.append(e)  # stale: 実効 lookback(土日除外) 超は打ち切り
             continue
         if failed_co.get(co, 0) >= max_resubmits:
             to_abandon.append(e)  # 再発注上限超過
