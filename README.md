@@ -8,6 +8,10 @@
 
 [English](README.en.md) | **日本語**
 
+> **[AlphaForge](https://alforgelabs.com) 戦略（Pine v6 Webhook エクスポート）とペアで使う発注ブリッジ** — TradingView のアラートを Webhook で受け取り、moomoo / OANDA に自動発注するセルフホスト型サーバーです。戦略の作成・最適化・ウォークフォワード検証は AlphaForge で。→ **[AlphaForge を無料で試す](https://alforgelabs.com)**
+
+---
+
 > **TradingView のアラートを Webhook で受け取り、moomoo / OANDA に自動発注するセルフホスト型ブリッジ**
 
 `alpha-strike` は、TradingView Premium / Essential 以上のアラート機能から Webhook 経由でシグナルを受け取り、リクエストボディに基づいて **moomoo 証券（米国株・香港株・暗号資産）** または **OANDA 証券（FX・CFD）** へ自動発注する FastAPI ベースの Webhook サーバーです。

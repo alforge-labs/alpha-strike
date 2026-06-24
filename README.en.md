@@ -8,6 +8,10 @@
 
 **English** | [日本語](README.md)
 
+> **Pairs with [AlphaForge](https://alforgelabs.com) strategies (Pine v6 → webhook execution)** — the agent-native quant CLI for strategy authoring, Optuna TPE optimization, walk-forward validation, and TradingView Pine v6 export. alpha-strike handles the execution half. → **[Try AlphaForge free](https://alforgelabs.com)**
+
+---
+
 > **Self-hosted webhook bridge from TradingView alerts to moomoo / OANDA brokers**
 
 `alpha-strike` is a FastAPI-based webhook server that receives signals from TradingView Premium / Essential alerts and routes orders to **moomoo securities (US / HK stocks, crypto)** or **OANDA securities (FX / CFD)** based on the JSON payload.
