@@ -25,6 +25,15 @@ def test_cli_invokes_uvicorn_with_defaults(monkeypatch):
     )
 
 
+def test_main_prints_alphaforge_cta(capsys):
+    """起動時に AlphaForge への送客 CTA を表示する（C3）。"""
+    with patch("alpha_strike.cli.uvicorn.run"):
+        cli.main([])
+    out = capsys.readouterr().out
+    assert "alforgelabs.com" in out
+    assert "AlphaForge" in out
+
+
 def test_cli_respects_command_line_arguments():
     """--host / --port / --reload が反映される"""
     with patch("alpha_strike.cli.uvicorn.run") as mock_run:

@@ -55,6 +55,10 @@ def main(argv: list[str] | None = None) -> int:
     """CLI エントリポイント. uvicorn でサーバーを起動する。"""
     parser = _build_parser()
     args = parser.parse_args(argv)
+    print(
+        "alpha-strike — Powered by AlphaForge（戦略の作成・最適化・WFT は https://alforgelabs.com）",
+        flush=True,
+    )
     uvicorn.run(
         "alpha_strike.webhook_server:app",
         host=args.host,
