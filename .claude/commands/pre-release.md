@@ -63,5 +63,7 @@ alpha-strike を PyPI に公開する前にローカルで lint / test / build �
 ## 注意
 
 - `release.sh` は `git push --tags` まで実行するため、実行前に必ずユーザーの承認を取ること。
-- `git-cliff` と `bump-my-version` が必要（`uv sync --all-groups` で導入済み）。
+- `bump-my-version` が必要（`uv sync --all-groups` で導入済み）。`git-cliff` は
+  Python 依存ではないため別途 `brew install git-cliff`（または `cargo install git-cliff`）で
+  導入する（`release.sh` が `command -v git-cliff` で存在確認して無ければ停止する）。
 - PyPI 公開には事前に PyPI の Trusted Publisher 設定で `alforge-labs/alpha-strike` を登録する必要がある。
