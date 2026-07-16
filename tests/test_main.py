@@ -34,6 +34,21 @@ def test_main_prints_alphaforge_cta(capsys):
     assert "AlphaForge" in out
 
 
+def test_main_prints_visualizer_hint(capsys):
+    """起動時に alpha-visualizer での可視化導線を表示する。
+
+    strike は equity カーブを持たず、記録した JSONL は
+    alpha-forge live sync-events 経由で alpha-visualizer の Live 画面に
+    表示される。運用者がこのエコシステム経路を発見できるよう、
+    起動バナーに可視化案内を常設する。
+    """
+    with patch("alpha_strike.cli.uvicorn.run"):
+        cli.main([])
+    out = capsys.readouterr().out
+    assert "alpha-visualizer" in out
+    assert "live sync-events" in out
+
+
 def test_cli_respects_command_line_arguments():
     """--host / --port / --reload が反映される"""
     with patch("alpha_strike.cli.uvicorn.run") as mock_run:

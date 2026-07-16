@@ -59,6 +59,11 @@ def main(argv: list[str] | None = None) -> int:
         "alpha-strike — Powered by AlphaForge（戦略の作成・最適化・WFT は https://alforgelabs.com）",
         flush=True,
     )
+    print(
+        "記録したライブイベントは alpha-visualizer の Live 画面で可視化できます"
+        "（alpha-forge live sync-events → import-events / replay で取込）",
+        flush=True,
+    )
     uvicorn.run(
         "alpha_strike.webhook_server:app",
         host=args.host,
