@@ -157,6 +157,24 @@ With the optional `target_qty` field (absolute target holding, `>= 0`), moomoo o
 | `COMMODITY` | oanda | `XAUUSD` |
 | `INDEX` | oanda | `NAS100` |
 
+## Visualizing Live Records
+
+The event log (JSONL) recorded by alpha-strike can be imported with [AlphaForge](https://alforgelabs.com) and visualized as an equity curve on the **Live screen** of [alpha-visualizer](https://github.com/alforge-labs/alpha-visualizer) (OSS, Apache-2.0). The same screen also shows the drift (diff) against backtest results.
+
+```bash
+# 1. Sync event JSONL from the VM into your local forge project
+alpha-forge live sync-events
+
+# 2. Import events and build live records
+alpha-forge live import-events <strategy_id>          # per strategy
+alpha-forge live replay <portfolio_id> \
+  --combine-strategies <id1>,<id2>                    # combine portfolio
+
+# 3. View on the alpha-visualizer Live screen
+pip install alpha-visualizer
+alpha-vis serve
+```
+
 ## Documentation
 
 - 📖 [Official Documentation](https://alforgelabs.com/en/docs/) — full doc index
@@ -191,7 +209,7 @@ uv build
 ## Related Projects
 
 - 🌐 [alforgelabs.com](https://alforgelabs.com/) — Alforge Labs official site
-- 📊 [alpha-visualizer](https://github.com/alforge-labs/alpha-visualizer) — Web visualization for AlphaForge backtest results (Apache-2.0)
+- 📊 [alpha-visualizer](https://github.com/alforge-labs/alpha-visualizer) — Web visualization for AlphaForge backtest results and alpha-strike live records (Apache-2.0)
 - 🧪 [AlphaForge](https://alforgelabs.com/en/docs/) — Backtesting and optimization engine (commercial license)
 
 ## Disclaimer

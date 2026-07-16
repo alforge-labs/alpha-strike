@@ -159,6 +159,24 @@ uv run alpha-strike --reload
 | `COMMODITY` | oanda | `XAUUSD` |
 | `INDEX` | oanda | `NAS100` |
 
+## ライブ実績の可視化
+
+alpha-strike が記録するイベントログ（JSONL）は、[AlphaForge](https://alforgelabs.com) で取り込み、[alpha-visualizer](https://github.com/alforge-labs/alpha-visualizer)（OSS・Apache-2.0）の **Live 画面**でエクイティカーブとして可視化できます。バックテスト結果との乖離（diff）も同じ画面で確認できます。
+
+```bash
+# 1. VM 上のイベント JSONL をローカルの forge プロジェクトへ同期
+alpha-forge live sync-events
+
+# 2. イベントを取り込んでライブ実績を生成
+alpha-forge live import-events <strategy_id>          # 戦略単位
+alpha-forge live replay <portfolio_id> \
+  --combine-strategies <id1>,<id2>                    # combine ポートフォリオ
+
+# 3. alpha-visualizer の Live 画面で表示
+pip install alpha-visualizer
+alpha-vis serve
+```
+
 ## ドキュメント
 
 - 📖 [公式ドキュメント](https://alforgelabs.com/ja/docs/) — Alforge Labs ドキュメント集約
@@ -193,7 +211,7 @@ uv build
 ## 関連プロジェクト
 
 - 🌐 [alforgelabs.com](https://alforgelabs.com/) — Alforge Labs 公式サイト
-- 📊 [alpha-visualizer](https://github.com/alforge-labs/alpha-visualizer) — AlphaForge バックテスト結果の Web 可視化ツール（Apache-2.0）
+- 📊 [alpha-visualizer](https://github.com/alforge-labs/alpha-visualizer) — AlphaForge バックテスト結果と alpha-strike ライブ実績の Web 可視化ツール（Apache-2.0）
 - 🧪 [AlphaForge](https://alforgelabs.com/ja/docs/) — バックテスト・最適化エンジン（商用ライセンス）
 
 ## 免責事項
