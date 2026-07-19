@@ -3,6 +3,78 @@
 alpha-strike の全バージョン変更履歴です。
 
 
+## [0.9.0] - 2026-07-19
+
+
+### CI/CD
+
+- **deps**: bump actions/checkout from 6 to 7 (#104)
+
+
+
+### その他
+
+- **deps**: bump starlette from 1.2.1 to 1.3.1 (#101)
+
+
+- **deps-dev**: bump ruff from 0.15.15 to 0.15.16 in the lint group (#99)
+
+
+- **deps**: pydantic-settings を 2.14.2 へ bump（Dependabot 警告 #7 対応） (#103)
+
+
+- **deps**: bump slowapi from 0.1.9 to 0.1.10 (#108)
+
+
+- **deps-dev**: bump bump-my-version from 1.3.0 to 1.4.1 (#111)
+
+
+- **deps**: bump fastapi in the fastapi group across 1 directory (#105)
+
+
+- **deps-dev**: bump pytest in the test group across 1 directory (#106)
+
+
+- **deps-dev**: bump ruff in the lint group across 1 directory (#107)
+
+
+- **deps**: bump fastapi from 0.138.0 to 0.138.1 in the fastapi group (#114)
+
+
+- **deps-dev**: bump ruff from 0.15.18 to 0.15.20 in the lint group (#116)
+
+
+- バージョン 0.9.0 にバンプ
+
+
+
+### ドキュメント
+
+- CHANGELOG を v0.8.1 に更新
+
+
+- **ops**: 互換台帳に alpha-strike 0.8.1 / futu-api 10.7.6708 を追記
+
+
+- **readme**: AlphaForge への送客 CTA を先頭に追加 (#109)
+
+
+- pre-release コマンドの git-cliff 導入手段の誤記を修正 (#112)
+
+
+- X (@Alforge_bot) フォローバッジと project.urls を追加 (#113)
+
+
+
+### 新機能
+
+- **cli**: 起動時に AlphaForge への送客 CTA を表示（C3） (#110)
+
+
+- alpha-visualizer でのライブ実績可視化導線を README と起動バナーに追加 (#117)
+
+
+
 ## [0.8.1] - 2026-06-16
 
 
