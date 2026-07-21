@@ -334,7 +334,7 @@ wheels = [
 
 [[package]]
 name = "futu-api"
-version = "10.7.6708"
+version = "10.8.6808"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pandas" },
@@ -342,7 +342,7 @@ dependencies = [
     { name = "pycryptodome" },
     { name = "simplejson" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/45/ca/34ea135e1bfc9ab7249bda4c77c89c93e31f65f53f5f48680ae5b95a2ed2/futu_api-10.7.6708.tar.gz", hash = "sha256:03118921c6662e5f14913d6071e9e72d7eee89674569bef4f86caadd48813867", size = 6299789, upload-time = "2026-06-04T12:28:15.599Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/98/52/271bf5a88b2583ea07f575dfdea123c9597fa7e35fe3b013668a052694e8/futu_api-10.8.6808.tar.gz", hash = "sha256:a239e836accc40995846bb39263218d8b77fa7d35bfd18772005439175fba6c8", size = 6411611, upload-time = "2026-06-25T08:30:37.307Z" }
 
 [[package]]
 name = "h11"
