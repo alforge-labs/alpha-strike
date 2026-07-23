@@ -50,6 +50,16 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/alpha_strike"]
 
+[tool.ruff.lint]
+# ruff 0.16.0 はデフォルト有効ルールを 59 → 413 に拡張する破壊的変更を行った。
+# これまで alpha-strike は select 未設定（＝従来デフォルト）で clean だったため、
+# 0.16 に上げると新規 413 ルールで 84 件の違反が顕在化する。うち 30 件は
+# DTZ（datetime の tz 付与）で、発注システムの時刻ロジックを機械的に tz-aware 化
+# すると挙動が変わりうる。移行ガイドの推奨に従い、従来デフォルト相当の select を
+# 明示 pin して挙動を固定する（バージョンは最新化しつつ lint 挙動は不変）。
+# 413 ルールの段階導入（時刻ロジックのレビューを伴う）は別作業とする。
+select = ["E4", "E7", "E9", "F"]
+
 [dependency-groups]
 dev = [
     "bump-my-version>=0.32.0",
