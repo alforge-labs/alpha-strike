@@ -3,6 +3,30 @@
 alpha-strike の全バージョン変更履歴です。
 
 
+## [1.0.2] - 2026-07-24
+
+
+### その他
+
+- **deps**: bump fastapi in the fastapi group across 1 directory (#118)
+
+
+- **deps-dev**: bump ruff in the lint group across 1 directory (#120)
+
+
+- **deps**: futu-api を 10.9.6908 へ昇格 + OpenD 10.9 ロックステップ台帳追記 (#124)
+
+
+- バージョン 1.0.2 にバンプ
+
+
+
+### ドキュメント
+
+- CHANGELOG を v1.0.1 に更新
+
+
+
 ## [1.0.1] - 2026-07-23
 
 
