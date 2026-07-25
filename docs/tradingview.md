@@ -319,14 +319,17 @@ cd ~/dev/alpha-strike
 
 ## 6-bis. Idempotency（重複発注の自動拒否）
 
-TradingView Webhook は **ネットワーク再送・alert 再評価・Restart 連打** などで同一シグナルが複数回到達することがある。alpha-strike は **`signal_id` を idempotency key として使い**、TTL 内に同じ `signal_id` が再到達した場合は broker に流さず 200 を返す（TradingView 側の自動リトライを止めるため、409 にはしない）。
+TradingView Webhook は **ネットワーク再送・alert 再評価・Restart 連打** などで同一シグナルが複数回到達することがある。alpha-strike は **`(signal_id, broker, ticker, action)` の複合キーを idempotency key として使い**、TTL 内に同じ組み合わせが再到達した場合は broker に流さず 200 を返す（TradingView 側の自動リトライを止めるため、409 にはしない）。
+
+> **なぜ複合キーなのか (#126)**: `signal_id` は通常 bar 単位で払い出すため、**同一バーで複数銘柄をリバランスする戦略では 3 銘柄が同じ `signal_id` を共有する**。`signal_id` 単独をキーにすると 2 銘柄目以降が重複として捨てられ、TradingView 側には "successfully delivered" と表示されたままリバランスだけが欠落する。銘柄・売買方向まで含めて 1 シグナルとして扱うことでこれを防いでいる。
 
 ### 動作仕様
 
 | 条件 | 動作 |
 |---|---|
 | `signal_id` 指定あり + 初回到達 | 通常の発注フローを実行 |
-| `signal_id` 指定あり + TTL 内に再到達 | broker 呼び出しスキップ、200 `{"status":"success", "message":"duplicate signal_id — already processed"}` を返す |
+| `signal_id` 指定あり + TTL 内に **同一 broker/ticker/action** で再到達 | broker 呼び出しスキップ、200 `{"status":"success", "message":"duplicate signal_id — already processed"}` を返す |
+| `signal_id` 指定あり + TTL 内に **別の ticker または action** で到達 | 別シグナルとして通常の発注フローを実行 |
 | `signal_id` 指定あり + TTL 経過後の再到達 | 通常の発注フローを実行（TTL 切れで履歴破棄済み） |
 | `signal_id` 未指定 | idempotency 検証スキップ（従来通り、毎回 broker に流れる） |
 
@@ -366,6 +369,8 @@ make_payload(string action, float qty) =>
 ```
 
 > **同一バー内の再発火を防ぐ効果**: 上記パターンで `signal_id` を `<strategy_id>_<timeframe>_<bar_open_time>` 形式にすると、同一バーで複数回 `alert()` 発火しても 2 回目以降は alpha-strike 側で必ず 200 + duplicate 扱いされる。
+>
+> **複数銘柄を同時にリバランスする場合**: この形式では銘柄が `signal_id` に含まれないため、同一バーの銘柄別アラートは同じ `signal_id` を共有する。alpha-strike は `ticker` / `action` まで含めて重複判定するので **そのままで正しく全銘柄が発注される** (#126)。`signal_id` に銘柄を含めても構わないが、必須ではない。
 
 ### `signal_id` が含まれていない場合
 

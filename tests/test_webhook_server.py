@@ -705,10 +705,83 @@ async def test_trade_closed_endpoint_also_returns_503_in_maintenance(client, mon
 
 
 # ============================================================
-# Idempotency tests (issue #41)
+# Idempotency tests (issue #41, #126)
 # ============================================================
-# signal_id を idempotency key として、同一 signal_id の重複到達を
-# 拒否する。broker への二重発注を防ぐ最終防御層。
+# (signal_id, broker, ticker, action) を idempotency key として、同一シグナルの
+# 重複到達を拒否する。broker への二重発注を防ぐ最終防御層。
+
+
+@pytest.mark.anyio
+async def test_same_signal_id_different_tickers_all_routed(client, monkeypatch):
+    """同一バーの銘柄別シグナルはすべて broker へ流れる (#126)。
+
+    TradingView は同一バーの銘柄別アラートに同じ signal_id を付けて送信する。
+    signal_id 単独で重複判定すると 2 銘柄目以降が捨てられ、リバランスが欠落したまま
+    TradingView 側には "successfully delivered" と表示されるため、検知されない
+    ポジション乖離が積み上がる（本番で毎営業日 1〜2 銘柄がロストしていた）。
+    """
+    from unittest.mock import patch
+
+    from alpha_strike.webhook_server import limiter
+
+    monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+    tickers = ["US.TQQQ", "US.TLT", "US.GLD"]
+
+    with patch(
+        "alpha_strike.handlers.moomoo_handler.MoomooHandler.execute",
+        return_value={"order_id": "300", "ret_code": 0},
+    ) as mock_exec:
+        for ticker in tickers:
+            limiter._storage.reset()
+            response = await client.post(
+                "/webhook",
+                json={
+                    **BASE_PAYLOAD,
+                    "broker": "moomoo",
+                    "asset_class": "US",
+                    "ticker": ticker,
+                    "quantity": 1,
+                    # 3 銘柄で共有される bar 単位の signal_id（TradingView の実挙動）
+                    "signal_id": "20260723-093000",
+                },
+            )
+            assert response.status_code == 200
+            assert "duplicate" not in response.json()["message"].lower()
+
+    assert mock_exec.call_count == 3
+    assert [call.args[0].ticker for call in mock_exec.call_args_list] == tickers
+
+
+@pytest.mark.anyio
+async def test_same_signal_id_same_ticker_opposite_action_both_routed(client, monkeypatch):
+    """同一 signal_id・同一銘柄でも売買方向が違えば別シグナルとして扱う (#126)。"""
+    from unittest.mock import patch
+
+    from alpha_strike.webhook_server import limiter
+
+    monkeypatch.setenv("MOOMOO_TRD_ENV", "SIMULATE")
+
+    with patch(
+        "alpha_strike.handlers.moomoo_handler.MoomooHandler.execute",
+        return_value={"order_id": "301", "ret_code": 0},
+    ) as mock_exec:
+        for action in ("buy", "sell"):
+            limiter._storage.reset()
+            response = await client.post(
+                "/webhook",
+                json={
+                    **BASE_PAYLOAD,
+                    "broker": "moomoo",
+                    "asset_class": "US",
+                    "action": action,
+                    "ticker": "US.TQQQ",
+                    "quantity": 1,
+                    "signal_id": "20260723-093000",
+                },
+            )
+            assert response.status_code == 200
+
+    assert mock_exec.call_count == 2
 
 
 @pytest.mark.anyio
