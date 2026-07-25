@@ -5,6 +5,8 @@ NTFY_TOPIC 未設定で no-op、設定時に ntfy へ POST することを opene
 
 from __future__ import annotations
 
+from email.header import decode_header, make_header
+
 from alpha_strike.services.notifier import NtfyNotifier
 
 
@@ -45,6 +47,53 @@ def test_enabled_posts_to_ntfy(monkeypatch):
     assert captured["url"].endswith("/alpha-strike-test")
     assert b"CANCELLED_ALL" in captured["data"]
     assert captured["headers"].get("title")  # Title ヘッダが付く
+
+
+def test_non_ascii_headers_are_latin1_safe(monkeypatch):
+    """絵文字・日本語を含むタイトル/タグでも通知が送出できること。
+
+    urllib は HTTP ヘッダを latin-1 で書き出すため、生の UTF-8 を渡すと送信前に
+    UnicodeEncodeError となり通知が丸ごと失われる（本番で約定通知が全滅した）。
+    ntfy は RFC 2047 エンコードヘッダを解釈するので、非 ASCII は必ず包んで送る。
+    """
+    monkeypatch.setenv("NTFY_TOPIC", "alpha-strike-test")
+    n = NtfyNotifier()
+
+    captured: dict = {}
+
+    def _opener(req, timeout=0):
+        captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+        return _FakeResp()
+
+    title = "✅ 注文 FILLED_ALL: US.GLD"
+    ok = n.notify(title, "本文", tags=["白チェック✅"], priority="high", opener=_opener)
+    assert ok is True
+
+    # 実際に urllib が行う latin-1 エンコードが全ヘッダで通ること（本番失敗条件そのもの）。
+    # エンコードできなければここで UnicodeEncodeError が送出されテストが落ちる。
+    for value in captured["headers"].values():
+        value.encode("latin-1")
+
+    # ntfy 側で元の文字列に復元できること（受信側の見た目が壊れない）
+    assert str(make_header(decode_header(captured["headers"]["title"]))) == title
+    assert str(make_header(decode_header(captured["headers"]["tags"]))) == "白チェック✅"
+
+
+def test_ascii_headers_are_sent_verbatim(monkeypatch):
+    """ASCII のみのヘッダは素のまま送る（不要なエンコードで可読性を落とさない）。"""
+    monkeypatch.setenv("NTFY_TOPIC", "alpha-strike-test")
+    n = NtfyNotifier()
+
+    captured: dict = {}
+
+    def _opener(req, timeout=0):
+        captured["headers"] = {k.lower(): v for k, v in req.header_items()}
+        return _FakeResp()
+
+    ok = n.notify("Order FILLED_ALL", "body", tags=["white_check_mark"], opener=_opener)
+    assert ok is True
+    assert captured["headers"]["title"] == "Order FILLED_ALL"
+    assert captured["headers"]["tags"] == "white_check_mark"
 
 
 def test_notify_swallows_errors(monkeypatch):

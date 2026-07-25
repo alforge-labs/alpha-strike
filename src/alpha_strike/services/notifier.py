@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import base64
 import logging
 import os
 import urllib.request
@@ -20,6 +21,22 @@ DEFAULT_TIMEOUT_SEC = 10.0
 
 # urlopen 差し替え用フック（テスト用）。
 UrlOpener = Callable[..., object]
+
+
+def encode_header_value(value: str) -> str:
+    """非 ASCII を含むヘッダ値を RFC 2047 (Base64/UTF-8) で包む。
+
+    urllib は HTTP ヘッダを latin-1 で書き出すため、絵文字や日本語を含むタイトル・タグを
+    そのまま渡すと `UnicodeEncodeError` で通知自体が送られない。ntfy は `X-Title` /
+    `X-Message` / `X-Tags` の RFC 2047 エンコードを解釈する（server v2.4.0+）ので、
+    非 ASCII のときだけ包んで送る。ASCII のみの値は素のまま返す（可読性を保つ）。
+    """
+    try:
+        value.encode("ascii")
+    except UnicodeEncodeError:
+        encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
+        return f"=?UTF-8?B?{encoded}?="
+    return value
 
 
 class NtfyNotifier:
@@ -49,11 +66,11 @@ class NtfyNotifier:
         if not self.enabled:
             return False
         url = f"{self.server}/{self.topic}"
-        headers = {"Title": title}
+        headers = {"Title": encode_header_value(title)}
         if tags:
-            headers["Tags"] = ",".join(tags)
+            headers["Tags"] = encode_header_value(",".join(tags))
         if priority:
-            headers["Priority"] = priority
+            headers["Priority"] = encode_header_value(priority)
         req = urllib.request.Request(
             url, data=message.encode("utf-8"), headers=headers, method="POST"
         )
