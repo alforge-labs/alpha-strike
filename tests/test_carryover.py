@@ -24,7 +24,7 @@ from alpha_strike.services.carryover import (
     should_carryover,
 )
 from alpha_strike.services.fill_service import FillEventService
-from alpha_strike.services.idempotency import IdempotencyStore
+from alpha_strike.services.idempotency import IdempotencyKey, IdempotencyStore
 from alpha_strike.services.status_service import (
     AccountStatus,
     AccountSummary,
@@ -212,6 +212,32 @@ def test_find_resolved_intent_excluded(tmp_path):
     assert to_resubmit == []
 
 
+def test_find_same_bar_multiple_tickers_all_pending(tmp_path):
+    """同一バーの銘柄別 intent はすべて再発注対象になる (#126)。
+
+    signal_id は bar 単位で払い出されるため、TradingView から届く同一バーの 3 銘柄は
+    同じ signal_id を持つ。signal_id 単独で dedupe すると 2 銘柄目以降が消える。
+    """
+    logger = JsonlEventLogger(base_path=tmp_path)
+    for ticker in ("US.TQQQ", "US.TLT", "US.GLD"):
+        _seed_queued(logger, "20260723-093000", ticker=ticker)
+    to_resubmit, to_abandon = find_carryover_intents(logger)
+    assert sorted(e["ticker"] for e in to_resubmit) == ["US.GLD", "US.TLT", "US.TQQQ"]
+    assert to_abandon == []
+
+
+def test_find_resolved_ticker_does_not_resolve_siblings(tmp_path):
+    """1 銘柄の解消は同一バーの他銘柄に波及しない (#126)。"""
+    logger = JsonlEventLogger(base_path=tmp_path)
+    _seed_queued(logger, "20260723-093000", ticker="US.TQQQ")
+    _seed_queued(logger, "20260723-093000", ticker="US.TLT")
+    _seed_order_recorded(
+        logger, _co_signal_id("20260723-093000"), status="accepted", ticker="US.TQQQ"
+    )
+    to_resubmit, _ = find_carryover_intents(logger)
+    assert [e["ticker"] for e in to_resubmit] == ["US.TLT"]
+
+
 def test_find_skipped_intent_excluded(tmp_path):
     """co の order_recorded(skipped)（target 到達/建玉なし）も解消とみなす。"""
     logger = JsonlEventLogger(base_path=tmp_path)
@@ -343,19 +369,48 @@ def test_run_no_pending_skips_market_query(tmp_path):
 
 
 def test_run_idempotency_blocks_double_submit(tmp_path):
-    """同一 co_signal_id は idempotency で 1 回に収束（再起動直後+通常サイクルの重なり対策）。"""
+    """同一 co_signal_id + 同一銘柄は idempotency で 1 回に収束（再起動直後+通常サイクルの重なり対策）。"""
     logger = JsonlEventLogger(base_path=tmp_path)
     _seed_queued(logger, "20260608-093000")
     router = _FakeRouter()
     ms = _FakeMarketState({"US.TLT": "AFTERNOON"})
     idem = IdempotencyStore()
-    idem.check_and_record(_co_signal_id("20260608-093000"))  # 既に発注済み相当
+    idem.check_and_record(  # 既に発注済み相当
+        IdempotencyKey(
+            signal_id=_co_signal_id("20260608-093000"), broker="moomoo", ticker="US.TLT"
+        )
+    )
     n = run_carryover_resubmit_once(
         market_state_provider=ms, status_provider=_status_provider(), event_logger=logger,
         order_router=router, fill_service=FillEventService(logger), idempotency=idem,
     )
     assert n == 0
     assert router.calls == []
+
+
+def test_run_idempotency_does_not_block_sibling_ticker(tmp_path):
+    """同一バーの別銘柄は冪等キーが別なので発注される (#126)。
+
+    co_signal_id 単独をキーにしていると、1 銘柄の発注済みマークで同一バーの他銘柄まで
+    二重発注扱いになり、リバランスが欠落したまま解消済みとして扱われてしまう。
+    """
+    logger = JsonlEventLogger(base_path=tmp_path)
+    _seed_queued(logger, "20260608-093000", ticker="US.TLT")
+    _seed_queued(logger, "20260608-093000", ticker="US.TQQQ")
+    router = _FakeRouter()
+    ms = _FakeMarketState({"US.TLT": "AFTERNOON", "US.TQQQ": "AFTERNOON"})
+    idem = IdempotencyStore()
+    idem.check_and_record(  # TLT だけ発注済み相当
+        IdempotencyKey(
+            signal_id=_co_signal_id("20260608-093000"), broker="moomoo", ticker="US.TLT"
+        )
+    )
+    n = run_carryover_resubmit_once(
+        market_state_provider=ms, status_provider=_status_provider(), event_logger=logger,
+        order_router=router, fill_service=FillEventService(logger), idempotency=idem,
+    )
+    assert n == 1
+    assert [c.ticker for c in router.calls] == ["US.TQQQ"]
 
 
 def test_run_sell_guard_clamps_resubmit(tmp_path):

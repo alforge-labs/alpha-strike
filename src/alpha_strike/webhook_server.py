@@ -56,7 +56,7 @@ from alpha_strike.services.carryover import (
     should_carryover,
 )
 from alpha_strike.services.fill_service import FillEventService, _generate_id
-from alpha_strike.services.idempotency import IdempotencyStore
+from alpha_strike.services.idempotency import IdempotencyKey, IdempotencyStore
 from alpha_strike.services.market_state import build_default_market_state_provider
 from alpha_strike.services.notifier import NtfyNotifier
 from alpha_strike.services.order_reconcile import reconcile_order
@@ -339,16 +339,26 @@ async def receive_webhook(
     fill_service: FillEventService = request.app.state.fill_service
 
     # Idempotency: payload.signal_id が指定されていれば重複検知（issue #41）。
-    # 同じ signal_id が TTL 内に再到達した場合は broker に流さず 200 を返して
+    # 同じシグナルが TTL 内に再到達した場合は broker に流さず 200 を返して
     # TradingView 側の自動リトライを止める（409 にすると無限リトライの危険）。
+    # 判定単位は (signal_id, broker, ticker, action)。signal_id は bar 単位で払い出され、
+    # 同一バーの銘柄別シグナルが同じ値を共有するため単独ではキーにできない (#126)。
     if payload.signal_id:
         idem: IdempotencyStore = request.app.state.idempotency
-        if not idem.check_and_record(payload.signal_id):
+        idem_key = IdempotencyKey(
+            signal_id=payload.signal_id,
+            broker=payload.broker,
+            ticker=payload.ticker,
+            action=payload.action,
+        )
+        if not idem.check_and_record(idem_key):
             logger.warning(
-                "idempotency: duplicate signal_id rejected (signal_id=%s broker=%s ticker=%s)",
+                "idempotency: duplicate signal rejected"
+                " (signal_id=%s broker=%s ticker=%s action=%s)",
                 safe_for_log(payload.signal_id),
                 safe_for_log(payload.broker),
                 safe_for_log(payload.ticker),
+                safe_for_log(payload.action),
             )
             return OrderResult(
                 status="success",

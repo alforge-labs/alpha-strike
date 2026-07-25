@@ -27,6 +27,7 @@ from typing import Any
 
 from alpha_strike.models import OrderEvent, SignalCarryoverQueuedEvent, WebhookPayload
 from alpha_strike.services.fill_service import _generate_id
+from alpha_strike.services.idempotency import IdempotencyKey
 from alpha_strike.services.market_state import is_market_open, market_open_map
 from alpha_strike.services.order_reconcile import reconcile_order_once
 from alpha_strike.services.sell_guard import is_sell_guard_enabled, resolve_sell_quantity
@@ -104,6 +105,25 @@ def _maps_to_us(asset_class: str) -> bool:
 
 def _co_signal_id(signal_id: str) -> str:
     return f"{signal_id}{_CO_SUFFIX}"
+
+
+def _intent_key(event: dict) -> tuple[str, str]:
+    """carry-over intent の識別単位 ``(signal_id, ticker)`` (#126)。
+
+    signal_id は bar 単位で払い出され、同一バーの銘柄別シグナルが同じ値を共有するため、
+    単独では識別できない（1 銘柄の発注で他銘柄まで解消済みと誤判定する）。
+
+    ``action`` を含めないのは、発注時に target_qty closed-loop (#80) や over-sell ガード
+    (#74) が方向を反転させうるため。queued が buy でも order_recorded は sell になり得る
+    ので、action を照合に使うと解消判定が成立せず再発注が繰り返される。
+    """
+    return (str(event.get("signal_id", "")), str(event.get("ticker", "")))
+
+
+def _co_key(key: tuple[str, str]) -> tuple[str, str]:
+    """queued 側の識別キーを、対応する carry-over 発注側のキーへ変換する。"""
+    signal_id, ticker = key
+    return (_co_signal_id(signal_id), ticker)
 
 
 def _weekend_hours_between(start: datetime, end: datetime) -> float:
@@ -203,10 +223,13 @@ def find_carryover_intents(
           保つため受信順に再発注する。
         - ``to_abandon``: 再発注上限超過 / stale（実効 lookback 超＝土日除外）で打ち切る intent。
 
-    解消判定（append-only・last-wins）:
+    解消判定（append-only・last-wins）。判定単位は ``(signal_id, ticker, action)`` で、
+    signal_id 単独ではない。signal_id は bar 単位で払い出されるため、同一バーの銘柄別
+    シグナルが同じ値を共有し、単独をキーにすると 1 銘柄の発注で他銘柄まで解消済みと
+    誤判定して取りこぼす (#126):
       - queued ``X`` に対し ``f"{X}_co"`` の order_recorded が accepted/skipped → 解消（除外）
       - ``f"{X}_co"`` の order_recorded(failed) 件数 ≥ ``max_resubmits`` → abandon
-      - 既に carryover_state=abandoned の queued がある signal_id → 除外
+      - 既に carryover_state=abandoned の queued がある → 除外
     """
     queued = event_logger.load_events(
         broker="moomoo", event_type="signal_carryover_queued", limit=_SCAN_LIMIT
@@ -215,36 +238,35 @@ def find_carryover_intents(
         broker="moomoo", event_type="order_recorded", limit=_ORDER_SCAN_LIMIT
     )
 
-    resolved_co: set[str] = set()
-    failed_co: dict[str, int] = {}
+    resolved_co: set[tuple[str, str]] = set()
+    failed_co: dict[tuple[str, str], int] = {}
     for oe in orders:
-        sid = str(oe.get("signal_id", ""))
+        key = _intent_key(oe)
         status = oe.get("status")
         if status in ("accepted", "skipped"):
-            resolved_co.add(sid)
+            resolved_co.add(key)
         elif status == "failed":
-            failed_co[sid] = failed_co.get(sid, 0) + 1
+            failed_co[key] = failed_co.get(key, 0) + 1
 
-    abandoned: set[str] = {
-        str(e.get("signal_id"))
-        for e in queued
-        if e.get("carryover_state") == "abandoned"
+    abandoned: set[tuple[str, str]] = {
+        _intent_key(e) for e in queued if e.get("carryover_state") == "abandoned"
     }
 
     current = now if now is not None else datetime.now()
-    seen: set[str] = set()
+    seen: set[tuple[str, str]] = set()
     to_resubmit: list[dict] = []
     to_abandon: list[dict] = []
     for e in queued:  # 新しい順
         if e.get("carryover_state") != "queued":
             continue
         sid = str(e.get("signal_id", ""))
-        if not sid or sid in seen:
+        key = _intent_key(e)
+        if not sid or key in seen:
             continue
-        seen.add(sid)
-        if sid in abandoned:
+        seen.add(key)
+        if key in abandoned:
             continue
-        co = _co_signal_id(sid)
+        co = _co_key(key)
         if co in resolved_co:
             continue  # 再発注済み（accepted）/ skip 済み → 解消
         try:
@@ -388,9 +410,16 @@ def _resubmit_intent(
     """
     orig_signal_id = str(intent.get("signal_id", ""))
     co_id = _co_signal_id(orig_signal_id)
+    # 冪等キーは銘柄まで含める。同一バーの銘柄別 intent は co_id が同じになるため、
+    # co_id 単独では 2 銘柄目以降が二重発注扱いで弾かれる (#126)。
+    idem_key = IdempotencyKey(
+        signal_id=co_id,
+        broker=str(intent.get("broker", "moomoo")),
+        ticker=str(intent.get("ticker", "")),
+    )
 
     # 同一プロセス内の二重発注防止（永続的な解消判定は order_recorded(co) の有無）
-    if idempotency is not None and not idempotency.check_and_record(co_id):
+    if idempotency is not None and not idempotency.check_and_record(idem_key):
         return False
 
     payload = _reconstruct_payload(intent)
@@ -446,7 +475,7 @@ def _resubmit_intent(
         # 失敗した試行は注文を出していない。冪等キーを解放して次スイープで即リトライ
         # 可能にする（TTL 満了まで ~30 分リトライが止まり、failed カウントも進まないのを防ぐ）。
         if idempotency is not None:
-            idempotency.forget(co_id)
+            idempotency.forget(idem_key)
         _record_order(
             event_logger, payload, signal_id=co_id,
             internal_order_id=internal_order_id, status="failed",
