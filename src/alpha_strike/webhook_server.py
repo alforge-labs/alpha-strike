@@ -35,6 +35,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from alpha_strike import __version__
 from alpha_strike.event_logger import JsonlEventLogger
 from alpha_strike.log_sanitize import safe_for_log
 from alpha_strike.models import (
@@ -221,6 +222,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
         )
         logger.info("carryover 再発注 有効 (interval=%ss)", co_interval)
+
+    # 同期済み _meta.json から alpha-visualizer がバージョンを読む
+    event_logger.write_version_meta(__version__)
 
     logger.info("Alpha-Strike Webhook サーバー起動完了")
     yield
