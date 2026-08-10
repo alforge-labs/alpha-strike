@@ -47,8 +47,10 @@ class JsonlEventLogger:
         （`glob("*.jsonl")`）と alpha-forge の `live/store.py` の
         `glob("*.jsonl")` の両方に混入し、イベント取り込みが壊れる。
 
-        書き込み失敗は握って警告ログのみ残す（`append` と同じ方針）。
-        バージョン表示は補助情報であり、発注サーバーの起動を止める理由にならない。
+        書き込み失敗（`OSError`）は握って警告ログのみ残す。バージョン表示は
+        補助情報であり、発注サーバーの起動を止める理由にならない。
+        `append` は `Exception` 全般を捕捉するのに対し、ここではファイル
+        I/O 由来の `OSError` のみを対象にする（挙動としては同等）。
         """
         payload = {
             "component": "alpha-strike",
