@@ -37,6 +37,35 @@ class JsonlEventLogger:
         except Exception as exc:
             logger.warning("イベントログ保存に失敗しました: %s", exc)
 
+    def write_version_meta(self, version: str) -> None:
+        """バージョン情報を events ディレクトリへ書き出す。
+
+        alpha-visualizer が `alpha-forge live sync-events` の rsync 経由でこれを
+        読み、メンテナンス画面へ alpha-strike のバージョンを表示する。
+
+        ファイル名を `.jsonl` にしてはいけない。自分の `load_events`
+        （`glob("*.jsonl")`）と alpha-forge の `live/store.py` の
+        `glob("*.jsonl")` の両方に混入し、イベント取り込みが壊れる。
+
+        書き込み失敗（`OSError`）は握って警告ログのみ残す。バージョン表示は
+        補助情報であり、発注サーバーの起動を止める理由にならない。
+        `append` は `Exception` 全般を捕捉するのに対し、ここではファイル
+        I/O 由来の `OSError` のみを対象にする（挙動としては同等）。
+        """
+        payload = {
+            "component": "alpha-strike",
+            "version": version,
+            "started_at": datetime.now().astimezone().isoformat(),
+        }
+        try:
+            base_path = self._resolve_base_path()
+            base_path.mkdir(parents=True, exist_ok=True)
+            (base_path / "_meta.json").write_text(
+                json.dumps(payload, ensure_ascii=False), encoding="utf-8"
+            )
+        except OSError as exc:
+            logger.warning("バージョンメタの書き出しに失敗しました: %s", exc)
+
     def load_events(
         self,
         *,
