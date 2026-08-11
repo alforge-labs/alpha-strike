@@ -37,6 +37,7 @@ from slowapi.util import get_remote_address
 
 from alpha_strike import __version__
 from alpha_strike.event_logger import JsonlEventLogger
+from alpha_strike.handlers.oanda_handler import resolve_oanda_env
 from alpha_strike.log_sanitize import safe_for_log
 from alpha_strike.models import (
     EventIngestResult,
@@ -712,7 +713,7 @@ async def health_check() -> dict:
 async def health_ready() -> dict:
     """依存サービスの疎通を確認する readiness probe。
 
-    - OANDA: 環境変数の存在を確認
+    - OANDA: 環境変数の存在と OANDA_ENV の妥当性を確認
     - moomoo: OpenD への TCP 接続を確認
 
     全チェック通過時: HTTP 200 {"status": "ready", ...}
@@ -722,15 +723,26 @@ async def health_ready() -> dict:
 
     oanda_key = os.getenv("OANDA_API_KEY", "")
     oanda_account = os.getenv("OANDA_ACCOUNT_ID", "")
-    if oanda_key and oanda_account:
-        checks["oanda"] = {"status": "ok"}
-    else:
+    if not (oanda_key and oanda_account):
         logger.warning(
             "OANDA 設定が不完全です: API_KEY=%s ACCOUNT_ID=%s",
             bool(oanda_key),
             bool(oanda_account),
         )
         checks["oanda"] = {"status": "error", "detail": "OANDA の設定が不完全です"}
+    else:
+        # OANDA_ENV が不正だと発注時に ValueError で全件落ちる。存在確認だけでは
+        # ok を返してしまい設定ミスを隠すため、発注時と同じ関数で妥当性まで見る。
+        try:
+            resolve_oanda_env()
+        except ValueError as e:
+            logger.warning("OANDA_ENV が不正です: %s", e)
+            checks["oanda"] = {
+                "status": "error",
+                "detail": "OANDA_ENV が不正です（PRACTICE または LIVE）",
+            }
+        else:
+            checks["oanda"] = {"status": "ok"}
 
     moomoo_host = os.getenv("MOOMOO_HOST", "127.0.0.1")
     try:

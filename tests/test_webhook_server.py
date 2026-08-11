@@ -572,6 +572,7 @@ async def test_health_ready_all_ok(client, monkeypatch):
 
     monkeypatch.setenv("OANDA_API_KEY", "test-key")
     monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account")
+    monkeypatch.setenv("OANDA_ENV", "PRACTICE")
 
     with patch("alpha_strike.webhook_server.socket.create_connection"):
         response = await client.get("/health/ready")
@@ -598,6 +599,70 @@ async def test_health_ready_oanda_missing_env(client, monkeypatch):
     data = response.json()
     assert data["status"] == "degraded"
     assert data["checks"]["oanda"]["status"] == "error"
+
+
+@pytest.mark.anyio
+async def test_health_ready_oanda_env_invalid(client, monkeypatch):
+    """/health/ready: OANDA_ENV が PRACTICE / LIVE 以外なら degraded (HTTP 503) を返す。
+
+    OandaHandler.execute() は OANDA_ENV が不正だと発注前に ValueError を投げるため、
+    この状態のサーバーは OANDA 注文を 1 件も通せない。readiness が API_KEY と
+    ACCOUNT_ID の有無しか見ていなかった頃は ok を返し続け、本番 .env が
+    ``OANDA_ENV=OANDA_ENV=PRACTICE`` と壊れていた事実を隠していた。
+    """
+    from unittest.mock import patch
+
+    monkeypatch.setenv("OANDA_API_KEY", "test-key")
+    monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account")
+    monkeypatch.setenv("OANDA_ENV", "OANDA_ENV=PRACTICE")
+
+    with patch("alpha_strike.webhook_server.socket.create_connection"):
+        response = await client.get("/health/ready")
+
+    assert response.status_code == 503
+    data = response.json()
+    assert data["status"] == "degraded"
+    assert data["checks"]["oanda"]["status"] == "error"
+
+
+@pytest.mark.anyio
+async def test_health_ready_oanda_env_live_is_ok(client, monkeypatch):
+    """/health/ready: OANDA_ENV=LIVE も正当な値として ok を返す。
+
+    検証追加のついでに PRACTICE 以外を一律 error にすると、本番口座で運用する
+    構成が常時 degraded になり readiness probe が永久に落ちる。
+    """
+    from unittest.mock import patch
+
+    monkeypatch.setenv("OANDA_API_KEY", "test-key")
+    monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account")
+    monkeypatch.setenv("OANDA_ENV", "LIVE")
+
+    with patch("alpha_strike.webhook_server.socket.create_connection"):
+        response = await client.get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json()["checks"]["oanda"]["status"] == "ok"
+
+
+@pytest.mark.anyio
+async def test_health_ready_oanda_env_is_case_insensitive(client, monkeypatch):
+    """/health/ready: OANDA_ENV の大小は発注時と同じく無視する。
+
+    readiness と発注で正規化ルールが割れると「readiness は通るのに発注が落ちる」
+    （逆も然り）が起きる。両者が同じ解決関数を共有していることを保証する。
+    """
+    from unittest.mock import patch
+
+    monkeypatch.setenv("OANDA_API_KEY", "test-key")
+    monkeypatch.setenv("OANDA_ACCOUNT_ID", "test-account")
+    monkeypatch.setenv("OANDA_ENV", "practice")
+
+    with patch("alpha_strike.webhook_server.socket.create_connection"):
+        response = await client.get("/health/ready")
+
+    assert response.status_code == 200
+    assert response.json()["checks"]["oanda"]["status"] == "ok"
 
 
 @pytest.mark.anyio
