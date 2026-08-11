@@ -13,6 +13,26 @@ logger = logging.getLogger(__name__)
 OANDA_PRACTICE_URL = "https://api-fxpractice.oanda.com"
 OANDA_LIVE_URL = "https://api-fxtrade.oanda.com"
 
+def resolve_oanda_env() -> str:
+    """環境変数 OANDA_ENV を正規化して返す。
+
+    発注時（OandaHandler.execute）と readiness probe（/health/ready）の双方から
+    呼ばれる。両者で判定が割れると「readiness は ok なのに発注が全部落ちる」状態を
+    見逃すため、解釈は必ずこの 1 箇所に集約する。
+
+    Returns:
+        "PRACTICE" または "LIVE"
+
+    Raises:
+        ValueError: PRACTICE / LIVE 以外の値が設定されている場合
+    """
+    oanda_env = os.getenv("OANDA_ENV", "PRACTICE").upper()
+    if oanda_env not in ("PRACTICE", "LIVE"):
+        raise ValueError(
+            f"OANDA_ENV は PRACTICE または LIVE である必要があります: {oanda_env!r}"
+        )
+    return oanda_env
+
 
 def _is_retryable_oanda_error(exc: Exception) -> bool:
     """5xx エラーおよびネットワーク一時障害のみリトライ対象とする。4xx（設定ミス等）はリトライしない。"""
@@ -69,16 +89,12 @@ class OandaHandler:
         """
         api_key = os.getenv("OANDA_API_KEY", "")
         account_id = os.getenv("OANDA_ACCOUNT_ID", "")
-        oanda_env = os.getenv("OANDA_ENV", "PRACTICE").upper()
 
         if not api_key:
             raise ValueError("環境変数 OANDA_API_KEY が設定されていません")
         if not account_id:
             raise ValueError("環境変数 OANDA_ACCOUNT_ID が設定されていません")
-        if oanda_env not in ("PRACTICE", "LIVE"):
-            raise ValueError(
-                f"OANDA_ENV は PRACTICE または LIVE である必要があります: {oanda_env!r}"
-            )
+        oanda_env = resolve_oanda_env()
 
         base_url = OANDA_PRACTICE_URL if oanda_env == "PRACTICE" else OANDA_LIVE_URL
         instrument = _to_oanda_instrument(payload.ticker, payload.asset_class)
