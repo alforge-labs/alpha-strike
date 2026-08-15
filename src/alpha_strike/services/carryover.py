@@ -22,12 +22,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from alpha_strike.models import OrderEvent, SignalCarryoverQueuedEvent, WebhookPayload
 from alpha_strike.services.fill_service import _generate_id
 from alpha_strike.services.idempotency import IdempotencyKey
+from alpha_strike.services.market_hours import effective_hours_between
 from alpha_strike.services.market_state import is_market_open, market_open_map
 from alpha_strike.services.order_reconcile import reconcile_order_once
 from alpha_strike.services.sell_guard import is_sell_guard_enabled, resolve_sell_quantity
@@ -124,32 +125,6 @@ def _co_key(key: tuple[str, str]) -> tuple[str, str]:
     """queued 側の識別キーを、対応する carry-over 発注側のキーへ変換する。"""
     signal_id, ticker = key
     return (_co_signal_id(signal_id), ticker)
-
-
-def _weekend_hours_between(start: datetime, end: datetime) -> float:
-    """``start``〜``end`` に含まれる土日(市場休場)の時間数を返す。
-
-    carry-over の lookback を「市場が動いている実効時間」で測るために使う。金曜
-    クローズ後シグナルは翌月曜寄付まで暦では 48h を超えるが、その大半は土日(市場
-    休場)で実効では数時間しか経っていない。土日を除外しないと週末跨ぎシグナルが
-    寄付前に stale 判定され取りこぼされる。祝日は考慮しない(YAGNI。必要なら
-    market_state 連携で拡張)。
-    """
-    if end <= start:
-        return 0.0
-    total = 0.0
-    cur = start
-    while cur < end:
-        day_end = min(
-            end,
-            (cur + timedelta(days=1)).replace(
-                hour=0, minute=0, second=0, microsecond=0
-            ),
-        )
-        if cur.weekday() >= 5:  # 5=土, 6=日
-            total += (day_end - cur).total_seconds() / 3600.0
-        cur = day_end
-    return total
 
 
 def should_carryover(
@@ -275,8 +250,7 @@ def find_carryover_intents(
             continue
         # lookback は「市場が動いている実効時間」で測る。暦時間で測ると金曜クローズ後
         # シグナルが土日(市場休場)だけで 48h を超え、月曜寄付前に stale 化して取りこぼす。
-        elapsed_hours = (current - occurred).total_seconds() / 3600.0
-        effective_hours = elapsed_hours - _weekend_hours_between(occurred, current)
+        effective_hours = effective_hours_between(occurred, current)
         if effective_hours > lookback_hours:
             to_abandon.append(e)  # stale: 実効 lookback(土日除外) 超は打ち切り
             continue
