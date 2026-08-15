@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
+from alpha_strike.models import SignalOutageDetectedEvent
+from alpha_strike.services.fill_service import _generate_id
 from alpha_strike.services.market_hours import effective_hours_between
 
 logger = logging.getLogger(__name__)
@@ -34,6 +36,7 @@ _RENOTIFY_ENV_VAR = "SIGNAL_WATCHDOG_RENOTIFY_HOURS"
 _BROKER_ENV_VAR = "SIGNAL_WATCHDOG_BROKER"
 _TRUTHY = {"1", "true", "yes", "on"}
 _VALID_BROKERS = {"oanda", "moomoo"}
+_TIME_FMT = "%Y-%m-%d %H:%M"
 
 DEFAULT_INTERVAL_SECONDS = 3600.0
 DEFAULT_THRESHOLD_HOURS = 60.0
@@ -162,3 +165,117 @@ def find_last_signal(
         return None, None
     signal_id = event.get("signal_id")
     return occurred_at, str(signal_id) if signal_id is not None else None
+
+
+@dataclass(frozen=True)
+class SignalWatchdogState:
+    """周回をまたぐ通知抑制の状態。
+
+    frozen なので更新は新インスタンスを返す。永続化しない: 再起動で失われても
+    「もう一度鳴る」方向に倒れるだけで、取りこぼす方向には倒れない。
+    """
+
+    last_notified_at: datetime | None = None
+    in_outage: bool = False
+
+
+def _emit(
+    event_logger: Any,
+    notifier: Any,
+    verdict: SignalOutageVerdict,
+    current: datetime,
+    broker: str,
+    outage_state: str,
+) -> None:
+    """通知を試み、結果に関わらずイベントを 1 件追記する。
+
+    「試みた」であって「成功した」ではない。``NTFY_TOPIC`` 未設定 (no-op) でも
+    POST 失敗でもイベントは残す。通知経路が壊れていても検知履歴だけは追えるようにする。
+    """
+    last_at_str = (
+        verdict.last_signal_at.strftime(_TIME_FMT)
+        if verdict.last_signal_at is not None
+        else "なし"
+    )
+    if outage_state == "detected":
+        title = "⚠️ シグナル途絶を検知"
+        message = (
+            f"最後のシグナル受信から {verdict.effective_hours:.1f} 実効時間"
+            "（土日除外）が経過しました。\n"
+            f"最終受信: {last_at_str} JST (signal_id={verdict.last_signal_id})\n"
+            "TradingView アラートの有効期限切れの可能性があります。"
+            "期限を確認してください。"
+        )
+        tags = ["warning"]
+        priority: str | None = "high"
+        logger.warning(
+            "シグナル途絶を検知: 実効 %.1fh > しきい値 %.1fh (最終受信=%s)",
+            verdict.effective_hours,
+            verdict.threshold_hours,
+            last_at_str,
+        )
+    else:
+        title = "✅ シグナル受信を再開"
+        message = f"最終受信: {last_at_str} JST (signal_id={verdict.last_signal_id})"
+        tags = ["white_check_mark"]
+        priority = None
+        logger.info("シグナル受信を再開: 最終受信=%s", last_at_str)
+
+    if notifier is not None:
+        sent = notifier.notify(title, message, tags=tags, priority=priority)
+        if not sent and getattr(notifier, "enabled", False):
+            logger.warning("signal watchdog の通知送信に失敗しました")
+
+    try:
+        event_logger.append(
+            SignalOutageDetectedEvent(
+                event_id=_generate_id("evt"),
+                occurred_at=current,
+                broker=broker,
+                outage_state=outage_state,
+                last_signal_at=verdict.last_signal_at,
+                last_signal_id=verdict.last_signal_id,
+                effective_hours=verdict.effective_hours,
+                threshold_hours=verdict.threshold_hours,
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 — 記録失敗で通知状態まで巻き戻さない
+        logger.warning("signal_outage_detected の追記に失敗: %s", exc)
+
+
+def run_signal_watchdog_once(
+    *,
+    event_logger: Any,
+    notifier: Any = None,
+    state: SignalWatchdogState,
+    threshold_hours: float = DEFAULT_THRESHOLD_HOURS,
+    renotify_hours: float = DEFAULT_RENOTIFY_HOURS,
+    broker: str = DEFAULT_BROKER,
+    now: datetime | None = None,
+) -> SignalWatchdogState:
+    """1 周回分の判定・通知・イベント追記を行い、新しい state を返す。
+
+    - 途絶中でも ``renotify_hours`` 未満なら沈黙する（通知もイベントも出さない）。
+      鳴りっぱなしにすると通知を無視するようになり、監視そのものが死ぬ。
+    - 途絶が解消した周回でのみ復旧通知を 1 回出す。
+    """
+    current = now if now is not None else datetime.now()
+    last_at, last_id = find_last_signal(event_logger, broker=broker)
+    verdict = evaluate_signal_outage(
+        last_at, current, threshold_hours=threshold_hours, last_signal_id=last_id
+    )
+
+    if verdict.is_outage:
+        if state.last_notified_at is not None:
+            since_hours = (
+                current - state.last_notified_at
+            ).total_seconds() / 3600.0
+            if since_hours < renotify_hours:
+                return state
+        _emit(event_logger, notifier, verdict, current, broker, "detected")
+        return SignalWatchdogState(last_notified_at=current, in_outage=True)
+
+    if state.in_outage:
+        _emit(event_logger, notifier, verdict, current, broker, "recovered")
+        return SignalWatchdogState(last_notified_at=None, in_outage=False)
+    return state

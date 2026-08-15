@@ -279,6 +279,33 @@ class SignalCarryoverQueuedEvent(BaseModel):
     sub_strategy_id: str | None = None
 
 
+class SignalOutageDetectedEvent(BaseModel):
+    """TradingView シグナルの途絶検知 / 復旧イベント。
+
+    TradingView のアラートは現行プランで最大 1 ヶ月しか設定できず、期限が切れると
+    サイレントに配信を停止する。サーバも OpenD も正常なまま webhook だけ止まるため、
+    ``/status`` では異常が見えない。本イベントは ntfy 通知と対で残す検知の記録で、
+    後から「何営業日落ちたか」を追えるようにする。
+
+    ``outage_state``:
+      - ``detected``: 途絶を検知して通知を試みた
+      - ``recovered``: シグナル受信が再開して復旧通知を試みた
+
+    下流（forge live replay / alpha-visualizer Live）は本イベントを **約定・保留の
+    いずれでもない運用イベント** として扱い、equity には一切計上しない。
+    """
+
+    event_type: Literal["signal_outage_detected"] = "signal_outage_detected"
+    event_id: str
+    occurred_at: datetime
+    broker: Literal["oanda", "moomoo"]
+    outage_state: Literal["detected", "recovered"] = "detected"
+    last_signal_at: datetime | None = None
+    last_signal_id: str | None = None
+    effective_hours: float
+    threshold_hours: float
+
+
 class TradeClosedPayload(BaseModel):
     passphrase: str = Field(repr=False)
     signal_id: str

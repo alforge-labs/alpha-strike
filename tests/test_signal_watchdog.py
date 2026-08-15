@@ -26,6 +26,7 @@ from alpha_strike.services.signal_watchdog import (
     DEFAULT_INTERVAL_SECONDS,
     DEFAULT_RENOTIFY_HOURS,
     DEFAULT_THRESHOLD_HOURS,
+    SignalWatchdogState,
     evaluate_signal_outage,
     find_last_signal,
     get_signal_watchdog_broker,
@@ -33,6 +34,7 @@ from alpha_strike.services.signal_watchdog import (
     get_signal_watchdog_renotify_hours,
     get_signal_watchdog_threshold_hours,
     is_signal_watchdog_enabled,
+    run_signal_watchdog_once,
 )
 
 _THRESHOLD = 60.0
@@ -185,3 +187,124 @@ class TestFindLastSignal:
         at, sid = find_last_signal(logger, broker="moomoo")
         assert at is None
         assert sid is None
+
+
+class _FakeNotifier:
+    """notify の呼び出しを記録する Fake。enabled は NtfyNotifier と同じ意味。"""
+
+    def __init__(self, enabled: bool = True) -> None:
+        self.enabled = enabled
+        self.calls: list[tuple[str, str]] = []
+
+    def notify(self, title, message, *, tags=(), priority=None, **kwargs) -> bool:
+        self.calls.append((title, message))
+        return self.enabled
+
+
+def _run(logger, notifier, state, now, renotify_hours=24.0):
+    return run_signal_watchdog_once(
+        event_logger=logger,
+        notifier=notifier,
+        state=state,
+        threshold_hours=60.0,
+        renotify_hours=renotify_hours,
+        broker="moomoo",
+        now=now,
+    )
+
+
+class TestRunSignalWatchdogOnce:
+    def test_途絶を検知したら通知しイベントを1件書く(self):
+        logger = _logger_with([_signal_event()])
+        notifier = _FakeNotifier()
+        state = _run(logger, notifier, SignalWatchdogState(), datetime(2026, 8, 13, 5, 0))
+
+        assert len(notifier.calls) == 1
+        title, message = notifier.calls[0]
+        assert "途絶" in title
+        assert "TradingView" in message  # 次の行動が分かる文面であること
+        assert logger.append.call_count == 1
+        written = logger.append.call_args[0][0]
+        assert written.event_type == "signal_outage_detected"
+        assert written.outage_state == "detected"
+        assert written.broker == "moomoo"
+        assert state.in_outage is True
+        assert state.last_notified_at == datetime(2026, 8, 13, 5, 0)
+
+    def test_正常時は通知もイベントも出さない(self):
+        logger = _logger_with([_signal_event()])
+        notifier = _FakeNotifier()
+        state = _run(logger, notifier, SignalWatchdogState(), datetime(2026, 8, 11, 5, 0))
+
+        assert notifier.calls == []
+        assert logger.append.call_count == 0
+        assert state.in_outage is False
+
+    def test_再通知抑制中は沈黙しイベントも書かない(self):
+        logger = _logger_with([_signal_event()])
+        notifier = _FakeNotifier()
+        first = _run(logger, notifier, SignalWatchdogState(), datetime(2026, 8, 13, 5, 0))
+        second = _run(logger, notifier, first, datetime(2026, 8, 13, 17, 0))  # 12h 後
+
+        assert len(notifier.calls) == 1  # 増えていない
+        assert logger.append.call_count == 1
+        assert second == first  # state は据え置き
+
+    def test_再通知間隔を超えたら再び通知する(self):
+        logger = _logger_with([_signal_event()])
+        notifier = _FakeNotifier()
+        first = _run(logger, notifier, SignalWatchdogState(), datetime(2026, 8, 13, 5, 0))
+        _run(logger, notifier, first, datetime(2026, 8, 14, 6, 0))  # 25h 後
+
+        assert len(notifier.calls) == 2
+        assert logger.append.call_count == 2
+
+    def test_復旧したら1回だけ通知する(self):
+        logger = _logger_with([_signal_event()])
+        notifier = _FakeNotifier()
+        outage = _run(logger, notifier, SignalWatchdogState(), datetime(2026, 8, 13, 5, 0))
+
+        # シグナルが再開した状態に差し替える
+        logger.load_events.return_value = [
+            _signal_event(occurred_at="2026-08-14T05:01:00", signal_id="20260813-093000")
+        ]
+        recovered = _run(logger, notifier, outage, datetime(2026, 8, 14, 6, 0))
+
+        assert len(notifier.calls) == 2
+        assert "再開" in notifier.calls[1][0]
+        assert logger.append.call_args[0][0].outage_state == "recovered"
+        assert recovered.in_outage is False
+        assert recovered.last_notified_at is None
+
+        # さらに次の周回では復旧通知を繰り返さない
+        again = _run(logger, notifier, recovered, datetime(2026, 8, 14, 7, 0))
+        assert len(notifier.calls) == 2
+        assert again.in_outage is False
+
+    def test_通知先が無くても検知イベントは書く(self):
+        """NTFY_TOPIC 未設定でも検知履歴だけは残す（後から sync-events で回収できる）。"""
+        logger = _logger_with([_signal_event()])
+        notifier = _FakeNotifier(enabled=False)
+        state = _run(logger, notifier, SignalWatchdogState(), datetime(2026, 8, 13, 5, 0))
+
+        assert logger.append.call_count == 1
+        assert state.in_outage is True
+
+    def test_シグナル0件では何も起きない(self):
+        logger = _logger_with([])
+        notifier = _FakeNotifier()
+        state = _run(logger, notifier, SignalWatchdogState(), datetime(2026, 8, 13, 5, 0))
+
+        assert notifier.calls == []
+        assert logger.append.call_count == 0
+        assert state.in_outage is False
+
+    def test_イベント追記に失敗しても通知済みの状態は進む(self):
+        """記録失敗で state を戻すと、次周回で同じ通知を繰り返してしまう。"""
+        logger = _logger_with([_signal_event()])
+        logger.append.side_effect = OSError("disk full")
+        notifier = _FakeNotifier()
+        state = _run(logger, notifier, SignalWatchdogState(), datetime(2026, 8, 13, 5, 0))
+
+        assert len(notifier.calls) == 1
+        assert state.in_outage is True
