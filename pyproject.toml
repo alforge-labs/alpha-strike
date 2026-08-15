@@ -1,6 +1,6 @@
 [project]
 name = "alpha-strike"
-version = "1.1.0"
+version = "1.2.0"
 description = "Self-hosted webhook bridge from TradingView alerts to moomoo / OANDA brokers, with Cloudflare Tunnel + WAF reference architecture."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -72,7 +72,7 @@ dev = [
 ]
 
 [tool.bumpversion]
-current_version = "1.1.0"
+current_version = "1.2.0"
 commit = true
 message = "chore: バージョン {new_version} にバンプ"
 tag = true
