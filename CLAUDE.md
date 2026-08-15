@@ -92,4 +92,9 @@ moomoo の銘柄コードは `US.AAPL`、`HK.00700` 形式。
 | `PENDING_RECONCILE_INTERVAL_SECONDS` | 遅延再照合の間隔秒（デフォルト `600`） |
 | `CARRYOVER_ENABLED` | クローズ後シグナルの carry-over 再発注ループ（#89）。`1`（デフォルト）または `0` |
 | `CARRYOVER_RESUBMIT_INTERVAL_SECONDS` / `CARRYOVER_LOOKBACK_HOURS` / `CARRYOVER_MAX_RESUBMITS` | carry-over ループの間隔・遡及窓・再発注上限。遡及窓は土日（市場休場）を除いた実効時間で計測するため、金曜クローズ後シグナルも週末をまたいで再発注される（祝日は対象外） |
+| `SIGNAL_WATCHDOG_ENABLED` | シグナル途絶の監視。`1`（デフォルト）または `0`。TradingView アラートのサイレント失効を検知して ntfy 通知する |
+| `SIGNAL_WATCHDOG_INTERVAL_SECONDS` | 途絶チェックの間隔秒（デフォルト `3600`） |
+| `SIGNAL_WATCHDOG_THRESHOLD_HOURS` | 途絶と判定する実効時間（土日除外、デフォルト `60`）。正常な週末跨ぎは実効 29h、米国祝日込みで 53h のため 2 セッション欠落で発報する |
+| `SIGNAL_WATCHDOG_RENOTIFY_HOURS` | 途絶継続中の再通知の最小間隔（デフォルト `24`） |
+| `SIGNAL_WATCHDOG_BROKER` | 監視対象 broker（デフォルト `moomoo`）。イベントの書き込み先ファイル名にも使う |
 | `STATUS_API_TOKEN` | `/status` API の Bearer トークン |
