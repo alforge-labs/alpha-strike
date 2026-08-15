@@ -17,10 +17,28 @@ VM / サービス停止は検知できない（watchdog もサーバごと死ぬ
 
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any
 
 from alpha_strike.services.market_hours import effective_hours_between
+
+logger = logging.getLogger(__name__)
+
+_ENABLED_ENV_VAR = "SIGNAL_WATCHDOG_ENABLED"
+_INTERVAL_ENV_VAR = "SIGNAL_WATCHDOG_INTERVAL_SECONDS"
+_THRESHOLD_ENV_VAR = "SIGNAL_WATCHDOG_THRESHOLD_HOURS"
+_RENOTIFY_ENV_VAR = "SIGNAL_WATCHDOG_RENOTIFY_HOURS"
+_BROKER_ENV_VAR = "SIGNAL_WATCHDOG_BROKER"
+_TRUTHY = {"1", "true", "yes", "on"}
+_VALID_BROKERS = {"oanda", "moomoo"}
+
+DEFAULT_INTERVAL_SECONDS = 3600.0
+DEFAULT_THRESHOLD_HOURS = 60.0
+DEFAULT_RENOTIFY_HOURS = 24.0
+DEFAULT_BROKER = "moomoo"
 
 
 @dataclass(frozen=True)
@@ -65,3 +83,82 @@ def evaluate_signal_outage(
         effective_hours=effective,
         threshold_hours=threshold_hours,
     )
+
+
+def is_signal_watchdog_enabled() -> bool:
+    """途絶監視の有効可否。既定 ON。
+
+    ``NTFY_TOPIC`` 未設定なら通知は no-op になるため、既定 ON でも配布ユーザーに
+    実害は無い（``CARRYOVER_ENABLED`` / ``PENDING_RECONCILE_ENABLED`` と同じ方針）。
+    """
+    return os.getenv(_ENABLED_ENV_VAR, "1").strip().lower() in _TRUTHY
+
+
+def _positive_float_env(name: str, default: float) -> float:
+    """正の float 環境変数。不正値・0 以下は既定へフォールバックする。"""
+    raw = os.getenv(name, str(default))
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning("%s が数値ではありません、既定の %s を使用", name, default)
+        return default
+    return value if value > 0 else default
+
+
+def get_signal_watchdog_interval() -> float:
+    """チェック間隔（秒）。既定 3600 秒（しきい値 60h に対し 1 時間毎で十分）。"""
+    return _positive_float_env(_INTERVAL_ENV_VAR, DEFAULT_INTERVAL_SECONDS)
+
+
+def get_signal_watchdog_threshold_hours() -> float:
+    """途絶と判定する実効時間（土日除外）。既定 60 時間。"""
+    return _positive_float_env(_THRESHOLD_ENV_VAR, DEFAULT_THRESHOLD_HOURS)
+
+
+def get_signal_watchdog_renotify_hours() -> float:
+    """途絶継続中の再通知の最小間隔（時間）。既定 24 時間。"""
+    return _positive_float_env(_RENOTIFY_ENV_VAR, DEFAULT_RENOTIFY_HOURS)
+
+
+def get_signal_watchdog_broker() -> str:
+    """監視対象 broker。既定 moomoo。不正値は既定へフォールバック。
+
+    イベントの ``broker`` にもこの値を使う。``event_logger.append`` は broker で
+    書き込み先ファイルを決めるため、不正値を通すと ``.unknown.jsonl`` が生まれ
+    alpha-forge 側の ``glob("*.jsonl")`` に混入する。
+    """
+    raw = os.getenv(_BROKER_ENV_VAR, DEFAULT_BROKER).strip().lower()
+    if raw not in _VALID_BROKERS:
+        logger.warning(
+            "%s が不正な値のため既定 %s を使用", _BROKER_ENV_VAR, DEFAULT_BROKER
+        )
+        return DEFAULT_BROKER
+    return raw
+
+
+def find_last_signal(
+    event_logger: Any, *, broker: str = DEFAULT_BROKER
+) -> tuple[datetime | None, str | None]:
+    """最新の ``signal_received`` の ``(occurred_at, signal_id)`` を返す。
+
+    ``load_events`` は新しい順に返すため ``limit=1`` で最新 1 件が取れる。返り値は
+    生 JSON 由来なので ``occurred_at`` は str。``fromisoformat`` でパースする
+    （``carryover.py`` と同じ扱い）。
+
+    見つからない・パースできない場合は ``(None, None)``。呼び出し側はこれを
+    「途絶と判定しない」fail-safe として扱う。ここで例外を投げると常駐ループが
+    毎周回エラーになる。
+    """
+    events = event_logger.load_events(
+        broker=broker, event_type="signal_received", limit=1
+    )
+    if not events:
+        return None, None
+    event = events[0]
+    try:
+        occurred_at = datetime.fromisoformat(str(event.get("occurred_at")))
+    except (TypeError, ValueError):
+        logger.warning("signal_received の occurred_at をパースできませんでした")
+        return None, None
+    signal_id = event.get("signal_id")
+    return occurred_at, str(signal_id) if signal_id is not None else None
