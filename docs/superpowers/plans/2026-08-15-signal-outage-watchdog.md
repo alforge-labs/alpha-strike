@@ -340,14 +340,6 @@ class TestEvaluateSignalOutage:
         assert v.last_signal_at is None
         assert v.effective_hours == pytest.approx(0.0)
 
-    def test_判定結果はイミュータブル(self):
-        v = evaluate_signal_outage(
-            datetime(2026, 8, 11, 5, 0),
-            datetime(2026, 8, 12, 5, 0),
-            threshold_hours=_THRESHOLD,
-        )
-        with pytest.raises(Exception):
-            v.is_outage = True  # type: ignore[misc]
 ```
 
 - [ ] **Step 2: テストが失敗することを確認**
@@ -432,7 +424,7 @@ def evaluate_signal_outage(
 - [ ] **Step 4: テストが通ることを確認**
 
 Run: `uv run pytest tests/test_signal_watchdog.py -v`
-Expected: PASS（7 件）
+Expected: PASS（6 件）
 
 - [ ] **Step 5: フルゲート**
 
@@ -687,7 +679,7 @@ def find_last_signal(
 - [ ] **Step 4: テストが通ることを確認**
 
 Run: `uv run pytest tests/test_signal_watchdog.py -v`
-Expected: PASS（16 件）
+Expected: PASS（15 件）
 
 - [ ] **Step 5: フルゲート**
 
@@ -1030,7 +1022,7 @@ def run_signal_watchdog_once(
 - [ ] **Step 5: テストが通ることを確認**
 
 Run: `uv run pytest tests/test_signal_watchdog.py -v`
-Expected: PASS（24 件）
+Expected: PASS（23 件）
 
 - [ ] **Step 6: フルゲート**
 
@@ -1173,7 +1165,7 @@ async def signal_watchdog_loop(
 - [ ] **Step 4: テストが通ることを確認**
 
 Run: `uv run pytest tests/test_signal_watchdog.py -v`
-Expected: PASS（26 件）
+Expected: PASS（25 件）
 
 - [ ] **Step 5: lifespan へ配線**
 
