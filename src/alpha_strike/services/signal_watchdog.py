@@ -265,6 +265,12 @@ def run_signal_watchdog_once(
     verdict = evaluate_signal_outage(
         last_at, current, threshold_hours=threshold_hours, last_signal_id=last_id
     )
+    logger.info(
+        "signal watchdog: 最終受信=%s 実効 %.1fh / しきい値 %.1fh",
+        verdict.last_signal_at,
+        verdict.effective_hours,
+        verdict.threshold_hours,
+    )
 
     if verdict.is_outage:
         if state.last_notified_at is not None:
@@ -276,7 +282,10 @@ def run_signal_watchdog_once(
         _emit(event_logger, notifier, verdict, current, broker, "detected")
         return SignalWatchdogState(last_notified_at=current, in_outage=True)
 
-    if state.in_outage:
+    # 読み込み失敗（last_signal_at=None）を復旧と誤認しない。イベントログが読めない間は
+    # 途絶状態を維持する。ここを緩めると、途絶が続いているのに「復旧しました」と通知して
+    # しまい、この機能が潰そうとしているサイレント失敗そのものを作る。
+    if state.in_outage and verdict.last_signal_at is not None:
         _emit(event_logger, notifier, verdict, current, broker, "recovered")
         return SignalWatchdogState(last_notified_at=None, in_outage=False)
     return state

@@ -73,7 +73,7 @@ class TestEvaluateSignalOutage:
         assert v.effective_hours == pytest.approx(53.0)
 
     def test_しきい値ちょうどは途絶と判定しない(self):
-        """境界は「超えたら」検知。等号で鳴くと祝日ケースと 1 秒差で衝突する。"""
+        """境界は「超えたら」検知。等号で鳴らすと祝日ケースと 1 秒差で衝突する。"""
         v = evaluate_signal_outage(
             datetime(2026, 8, 10, 0, 0),  # 月 00:00
             datetime(2026, 8, 12, 12, 0),  # 水 12:00 = 実効ちょうど 60h
@@ -282,6 +282,52 @@ class TestRunSignalWatchdogOnce:
         again = _run(logger, notifier, recovered, datetime(2026, 8, 14, 7, 0))
         assert len(notifier.calls) == 2
         assert again.in_outage is False
+
+    def test_途絶中の読み込み失敗を復旧と誤認しない(self):
+        """WHY: find_last_signal は「イベント0件」と「読み込み失敗」を区別せず両方
+        (None, None) を返す（load_events は全例外を握って [] を返す仕様）。復旧判定を
+        verdict.is_outage=False だけで行うと、途絶中に読み込みが一時的に失敗しただけで
+        「復旧しました」という偽の通知が飛んでしまう。これは (a) 操作者を安心させる誤報、
+        (b) last_notified_at=None による再通知抑制の無効化、(c) outage_state="recovered"
+        の誤記録という3つの被害を生み、この機能が潰そうとしているサイレント失敗そのもの
+        を作ってしまう。1周目で途絶検知→ 2周目で読み込み失敗（load_events が [] を返す）
+        → 3周目で読み込み回復、という3周回をなぞり、2周目で復旧通知が飛ばず in_outage が
+        True のまま維持されることを検証する。
+        """
+        logger = _logger_with([_signal_event()])
+        notifier = _FakeNotifier()
+
+        # 1周目: 途絶検知
+        outage = _run(
+            logger, notifier, SignalWatchdogState(), datetime(2026, 8, 13, 5, 0)
+        )
+        assert outage.in_outage is True
+        assert len(notifier.calls) == 1
+
+        # 2周目: イベントログの読み込みが失敗（load_events が [] を返す）
+        logger.load_events.return_value = []
+        after_failure = _run(
+            logger, notifier, outage, datetime(2026, 8, 13, 6, 0)
+        )
+
+        # 復旧通知が飛んでいないこと
+        assert len(notifier.calls) == 1
+        assert logger.append.call_count == 1
+        # 途絶状態が維持されていること
+        assert after_failure.in_outage is True
+        # 24h 再通知抑制が無効化されていないこと（last_notified_at が保持されている）
+        assert after_failure.last_notified_at == outage.last_notified_at
+
+        # 3周目: 読み込みが回復（本当に受信が再開したケース）
+        logger.load_events.return_value = [
+            _signal_event(occurred_at="2026-08-14T05:01:00", signal_id="20260813-093000")
+        ]
+        recovered = _run(
+            logger, notifier, after_failure, datetime(2026, 8, 14, 6, 0)
+        )
+        assert len(notifier.calls) == 2
+        assert "再開" in notifier.calls[1][0]
+        assert recovered.in_outage is False
 
     def test_通知先が無くても検知イベントは書く(self):
         """NTFY_TOPIC 未設定でも検知履歴だけは残す（後から sync-events で回収できる）。"""

@@ -1367,4 +1367,7 @@ curl -s localhost:8080/health
 
 既定値のまま動くため `/etc/alpha-strike/.env` への追記は不要。しきい値を変えるときだけ追記する。
 
-5. 反映後、`journalctl -u alpha-strike | grep "signal watchdog"` で `signal watchdog 有効 (interval=3600.0s)` が出ていることを確認する
+5. 反映後、`journalctl -u alpha-strike | grep "signal watchdog"` を確認する。起動行
+   `signal watchdog 有効 (interval=3600.0s)` は「起動した」の確認に過ぎないため、
+   1 周回後に出る `signal watchdog: 最終受信=... 実効 ...h / しきい値 ...h` の行まで
+   確認し、正しい最終受信時刻を読めていること（＝機能していること）を確かめる
