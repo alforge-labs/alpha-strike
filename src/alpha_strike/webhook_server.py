@@ -72,6 +72,14 @@ from alpha_strike.services.sell_guard import (
     is_sell_guard_enabled,
     resolve_sell_quantity,
 )
+from alpha_strike.services.signal_watchdog import (
+    get_signal_watchdog_broker,
+    get_signal_watchdog_interval,
+    get_signal_watchdog_renotify_hours,
+    get_signal_watchdog_threshold_hours,
+    is_signal_watchdog_enabled,
+    signal_watchdog_loop,
+)
 from alpha_strike.services.status_auth import require_status_token
 from alpha_strike.services.target_reconcile import (
     is_target_reconcile_enabled,
@@ -224,6 +232,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         logger.info("carryover 再発注 有効 (interval=%ss)", co_interval)
 
+    # シグナル途絶 watchdog: TradingView アラートのサイレント失効を検知して通知する。
+    # サーバも OpenD も正常なまま webhook だけ止まるため、イベントログの「シグナルが
+    # 来ない」以外に症状が出ない。過去 2 回とも人手の点検でしか気づけず、7 営業日 /
+    # 4 営業日を取りこぼした。
+    app.state.signal_watchdog_task = None
+    if is_signal_watchdog_enabled():
+        sw_interval = get_signal_watchdog_interval()
+        if not app.state.notifier.enabled:
+            # 「監視しているつもりで通知先が無い」状態を起動時に見えるようにする
+            logger.warning(
+                "signal watchdog 有効ですが NTFY_TOPIC 未設定のため通知は飛びません"
+                "（検知イベントの記録のみ行います）"
+            )
+        app.state.signal_watchdog_task = asyncio.create_task(
+            signal_watchdog_loop(
+                event_logger=event_logger,
+                notifier=app.state.notifier,
+                interval_seconds=sw_interval,
+                threshold_hours=get_signal_watchdog_threshold_hours(),
+                renotify_hours=get_signal_watchdog_renotify_hours(),
+                broker=get_signal_watchdog_broker(),
+            )
+        )
+        logger.info("signal watchdog 有効 (interval=%ss)", sw_interval)
+
     # 同期済み _meta.json から alpha-visualizer がバージョンを読む
     event_logger.write_version_meta(__version__)
 
@@ -237,6 +270,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.carryover_resubmit_task.cancel()
         with suppress(asyncio.CancelledError):
             await app.state.carryover_resubmit_task
+    if app.state.signal_watchdog_task is not None:
+        app.state.signal_watchdog_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await app.state.signal_watchdog_task
     logger.info("Alpha-Strike Webhook サーバー停止")
 
 
