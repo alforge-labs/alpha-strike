@@ -267,10 +267,13 @@ TDD で先にテストを書く。
 
 1. `alpha-strike/README.md` の環境変数表に 5 変数を追記
 2. `alpha-strike/CLAUDE.md` の環境変数表に 5 変数を追記
-3. `alpha-strike/CHANGELOG.md` に追記
-4. `alforge-labs/mkdocs_src/ja/guides/alpha-strike-setup.md` と **`en/` 版**の両方を更新
-5. `alforge-labs` で `uv run mkdocs build -f mkdocs.ja.yml` と `-f mkdocs.en.yml` を実行し、
+3. `alforge-labs/mkdocs_src/ja/guides/alpha-strike-setup.md` と **`en/` 版**の両方を更新
+4. `alforge-labs` で `uv run mkdocs build -f mkdocs.ja.yml` と `-f mkdocs.en.yml` を実行し、
    **ビルド成果物もコミットに含める**
+
+`CHANGELOG.md` は手で編集しない。`release.sh` が `git cliff --output CHANGELOG.md` で
+コミット履歴から再生成するため、**Conventional Commits の型を正しく付けることが CHANGELOG の入力**になる
+（型が無いコミットは CHANGELOG から落ちる）。
 
 alpha-strike と alforge-labs は独立リポジトリのため PR は 2 本になるが、同じ作業単位として揃えてマージする。
 
@@ -302,7 +305,8 @@ curl -s localhost:8080/health
 - [ ] 月曜が米国祝日のケース（実効 53h）で通知が飛ばないテストが存在し緑
 - [ ] 2026-08-08 05:01 起点の実データ相当ケースで通知が飛ぶテストが存在し緑
 - [ ] carry-over の既存テストが緑のまま（`_weekend_hours_between` 移動の回帰なし）
-- [ ] README / CLAUDE.md / CHANGELOG / mkdocs_src(ja,en) が更新され、mkdocs ビルド成果物も含まれる
+- [ ] README / CLAUDE.md / mkdocs_src(ja,en) が更新され、mkdocs ビルド成果物も含まれる
+- [ ] 全コミットが Conventional Commits の型付き（CHANGELOG 自動生成の入力になるため）
 
 ## 14. やらないこと（YAGNI）
 
