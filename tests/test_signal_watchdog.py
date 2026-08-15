@@ -24,11 +24,13 @@ import pytest
 from alpha_strike.services.signal_watchdog import (
     DEFAULT_BROKER,
     DEFAULT_INTERVAL_SECONDS,
+    DEFAULT_RENOTIFY_HOURS,
     DEFAULT_THRESHOLD_HOURS,
     evaluate_signal_outage,
     find_last_signal,
     get_signal_watchdog_broker,
     get_signal_watchdog_interval,
+    get_signal_watchdog_renotify_hours,
     get_signal_watchdog_threshold_hours,
     is_signal_watchdog_enabled,
 )
@@ -147,6 +149,19 @@ class TestEnvHelpers:
     def test_有効なbrokerはそのまま使う(self, monkeypatch):
         monkeypatch.setenv("SIGNAL_WATCHDOG_BROKER", "oanda")
         assert get_signal_watchdog_broker() == "oanda"
+
+    def test_数値でない再通知間隔は既定へフォールバック(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_WATCHDOG_RENOTIFY_HOURS", "invalid")
+        assert get_signal_watchdog_renotify_hours() == DEFAULT_RENOTIFY_HOURS
+
+    def test_0以下の再通知間隔は既定へフォールバック(self, monkeypatch):
+        monkeypatch.setenv("SIGNAL_WATCHDOG_RENOTIFY_HOURS", "0")
+        assert get_signal_watchdog_renotify_hours() == DEFAULT_RENOTIFY_HOURS
+
+    def test_有効な再通知間隔はそのまま使う(self, monkeypatch):
+        """環境変数名の取り違え検出。THRESHOLD と RENOTIFY を混同していないか確認。"""
+        monkeypatch.setenv("SIGNAL_WATCHDOG_RENOTIFY_HOURS", "48")
+        assert get_signal_watchdog_renotify_hours() == 48.0
 
 
 class TestFindLastSignal:
