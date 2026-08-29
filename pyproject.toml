@@ -42,6 +42,7 @@ Changelog = "https://github.com/alforge-labs/alpha-strike/blob/main/CHANGELOG.md
 
 [project.scripts]
 alpha-strike = "alpha_strike.cli:main"
+alpha-strike-watchdog = "alpha_strike.cli:watchdog_main"
 
 [build-system]
 requires = ["hatchling"]

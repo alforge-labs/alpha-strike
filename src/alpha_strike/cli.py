@@ -11,12 +11,25 @@ PyPI からインストール後、以下のコマンドで Webhook サーバー
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 
 import uvicorn
 
 from alpha_strike import __version__
+from alpha_strike.event_logger import JsonlEventLogger
+from alpha_strike.services.notifier import NtfyNotifier
+from alpha_strike.services.signal_watchdog import (
+    get_signal_watchdog_broker,
+    get_signal_watchdog_renotify_hours,
+    get_signal_watchdog_threshold_hours,
+    is_signal_watchdog_enabled,
+    load_watchdog_state,
+    run_signal_watchdog_once,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -70,6 +83,51 @@ def main(argv: list[str] | None = None) -> int:
         port=args.port,
         reload=args.reload,
     )
+    return 0
+
+
+def watchdog_main(argv: list[str] | None = None) -> int:
+    """シグナル途絶監視の単発実行。systemd timer から毎時呼ばれる。
+
+    プロセス内の常駐ループではなく別プロセスにすることで、alpha-strike 本体の
+    イベントループが OpenD の同期呼び出しで凍結しても、またプロセスが落ちても、
+    監視だけは独立して動き続ける（2026-08-23 の障害はこれが無くて 5 営業日気づけなかった）。
+
+    引数は取らない。設定は ``SIGNAL_WATCHDOG_*`` 環境変数から読む。
+
+    Returns:
+        常に 0。途絶したかどうかは通知とイベントログで表現する。非ゼロにすると systemd が
+        timer を failed 扱いにし、「監視が動いている」ことと「途絶している」ことの区別が
+        つかなくなるため。
+    """
+    # noqa is needed because argv is accepted for testability
+    _ = argv  # noqa: F841
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    try:
+        if not is_signal_watchdog_enabled():
+            logger.info("signal watchdog は無効化されています")
+            return 0
+        notifier = NtfyNotifier()
+        if not notifier.enabled:
+            logger.warning(
+                "NTFY_TOPIC 未設定のため通知は飛びません（検知イベントの記録のみ行います）"
+            )
+        event_logger = JsonlEventLogger()
+        broker = get_signal_watchdog_broker()
+        state = load_watchdog_state(event_logger, broker=broker)
+        run_signal_watchdog_once(
+            event_logger=event_logger,
+            notifier=notifier,
+            state=state,
+            threshold_hours=get_signal_watchdog_threshold_hours(),
+            renotify_hours=get_signal_watchdog_renotify_hours(),
+            broker=broker,
+        )
+    except Exception as exc:  # noqa: BLE001 — timer の次回実行を止めない
+        logger.warning("signal watchdog の実行でエラー: %s", exc)
     return 0
 
 
