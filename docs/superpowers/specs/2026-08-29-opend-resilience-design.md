@@ -51,7 +51,7 @@ OpenD が画像認証待ちで無限リトライしている間、これらの�
 - `/status` `/status/events` が 524
 - 常駐タスク（watchdog / carryover / pending_reconcile）が全停止
 
-背景タスク側は全て `asyncio.to_thread` を正しく使っており、**欠陥はリクエストハンドラ 3 箇所に限定**される。
+背景タスク側は全て `asyncio.to_thread` を正しく使っており、**欠陥はリクエストハンドラ 5 箇所に限定**される。
 
 補助的な要因が 2 つある。
 
