@@ -81,9 +81,20 @@ OpenD が画像認証待ちで無限リトライしている間、これらの�
 ### 5.1 構成
 
 ```
-alpha-strike watchdog-check          ★新規 CLI サブコマンド（単発実行）
+alpha-strike-watchdog                ★新規 console script（単発実行）
 alpha-strike-watchdog.service        ★新規 systemd unit (Type=oneshot)
 alpha-strike-watchdog.timer          ★新規 systemd timer (OnCalendar=hourly)
+```
+
+**サブコマンドではなく独立した console script にする。** 現行 CLI は `argparse` のフラットな
+パーサで、systemd の `ExecStart=/opt/alpha-strike/.venv/bin/alpha-strike --host 0.0.0.0 --port 8080`
+がその形に依存している。ここへサブパーサを導入すると本番の起動コマンドを壊すリスクがあるため、
+`pyproject.toml` の `[project.scripts]` に 1 行足して別バイナリとして分離する。
+
+```toml
+[project.scripts]
+alpha-strike = "alpha_strike.cli:main"
+alpha-strike-watchdog = "alpha_strike.cli:watchdog_main"   # ★追加
 ```
 
 判定ロジック（`evaluate_signal_outage` / `find_last_signal` / `_emit` / 環境変数ヘルパー）は
@@ -118,8 +129,11 @@ def load_watchdog_state(
 ### 5.3 CLI の仕様
 
 ```
-alpha-strike watchdog-check
+alpha-strike-watchdog
 ```
+
+引数は取らない。設定はすべて既存の `SIGNAL_WATCHDOG_*` 環境変数から読む
+（systemd unit の `EnvironmentFile=/etc/alpha-strike/.env` で本体と同じ設定を共有する）。
 
 終了コードは**常に 0**。途絶を検知したかどうかは通知とイベントログで表現し、終了コードには
 乗せない。非ゼロにすると systemd が failed 扱いにしてタイマーの状態が汚れ、「監視が動いている」
@@ -175,7 +189,7 @@ Python はスレッドを中断できないため `asyncio.wait_for` はスレ�
 
 ## 8. エラーハンドリング
 
-- `watchdog-check` は全例外を握って警告ログを出し、終了コード 0 で終わる。タイマーの
+- `watchdog_main` は全例外を握って警告ログを出し、終了コード 0 で終わる。タイマーの
   次回実行を止めないため
 - `load_watchdog_state` はパース失敗時に初期状態を返す（誤報より沈黙を選ぶ既存方針を踏襲）
 - `to_thread` 化した 3 箇所の例外処理は現行と同一（`/webhook` は 502、`/status` は 502）
@@ -196,7 +210,7 @@ TDD で先にテストを書く。
 
 ### `tests/test_cli.py`（新規または追記）
 
-- `watchdog-check` が `SIGNAL_WATCHDOG_ENABLED=0` で何もせず 0 を返す
+- `alpha-strike-watchdog` が `SIGNAL_WATCHDOG_ENABLED=0` で何もせず 0 を返す
 - 途絶検知時も終了コードが 0
 - 例外が起きても終了コードが 0
 
