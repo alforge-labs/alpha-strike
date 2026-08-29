@@ -35,6 +35,7 @@ from alpha_strike.services.signal_watchdog import (
     get_signal_watchdog_renotify_hours,
     get_signal_watchdog_threshold_hours,
     is_signal_watchdog_enabled,
+    load_watchdog_state,
     run_signal_watchdog_once,
     signal_watchdog_loop,
 )
@@ -407,3 +408,64 @@ class TestSignalWatchdogLoop:
         with pytest.raises(asyncio.CancelledError):
             await task
         assert len(calls) >= 2  # 1 回目の例外後も呼ばれ続けている
+
+
+def _outage_event(
+    outage_state: str = "detected",
+    occurred_at: str = "2026-08-27T06:35:25.893709",
+) -> dict:
+    return {
+        "event_type": "signal_outage_detected",
+        "event_id": "evt_1",
+        "occurred_at": occurred_at,
+        "broker": "moomoo",
+        "outage_state": outage_state,
+        "last_signal_at": "2026-08-22T05:01:02.781919",
+        "last_signal_id": "20260821-093000",
+        "effective_hours": 78.59,
+        "threshold_hours": 60.0,
+    }
+
+
+class TestLoadWatchdogState:
+    """WHY: 別プロセス実行の watchdog は周回間の記憶を持てない。自分が書いたイベントを
+    唯一の状態ソースにすることで、再通知抑制がプロセスをまたいで働く。ここが壊れると
+    1 時間ごとに通知が飛び続け、通知を無視するようになって監視自体が死ぬ。"""
+
+    def test_最新がdetectedなら途絶中として復元する(self):
+        logger = _logger_with([_outage_event("detected")])
+        state = load_watchdog_state(logger, broker="moomoo")
+        assert state.in_outage is True
+        assert state.last_notified_at == datetime(2026, 8, 27, 6, 35, 25, 893709)
+        logger.load_events.assert_called_once_with(
+            broker="moomoo", event_type="signal_outage_detected", limit=1
+        )
+
+    def test_最新がrecoveredなら初期状態(self):
+        state = load_watchdog_state(_logger_with([_outage_event("recovered")]))
+        assert state.in_outage is False
+        assert state.last_notified_at is None
+
+    def test_イベントが0件なら初期状態(self):
+        state = load_watchdog_state(_logger_with([]))
+        assert state.in_outage is False
+        assert state.last_notified_at is None
+
+    def test_occurred_atが壊れていても例外を投げず初期状態(self):
+        """パース失敗で例外を投げると timer 実行が failed になり監視が止まる。"""
+        logger = _logger_with([_outage_event("detected", occurred_at="not-a-date")])
+        state = load_watchdog_state(logger)
+        assert state.in_outage is False
+        assert state.last_notified_at is None
+
+    def test_復旧後に再検知した場合は最新のdetectedを使う(self):
+        """load_events は新しい順に返す。先頭 1 件だけを見れば足りることを固定する。"""
+        logger = _logger_with(
+            [
+                _outage_event("detected", occurred_at="2026-08-29T12:00:00"),
+                _outage_event("recovered", occurred_at="2026-08-28T05:05:00"),
+            ]
+        )
+        state = load_watchdog_state(logger)
+        assert state.in_outage is True
+        assert state.last_notified_at == datetime(2026, 8, 29, 12, 0, 0)

@@ -180,6 +180,36 @@ class SignalWatchdogState:
     in_outage: bool = False
 
 
+def load_watchdog_state(
+    event_logger: Any, *, broker: str = DEFAULT_BROKER
+) -> SignalWatchdogState:
+    """最新の ``signal_outage_detected`` から再通知抑制の状態を復元する。
+
+    単発実行の watchdog はプロセスをまたいで状態を持てないため、自分が書いたイベントを
+    唯一の状態ソースとして使う。新しい状態ファイルは作らない。
+
+    ``load_events`` は新しい順に返すので先頭 1 件を見れば足りる。``recovered``・0 件・
+    パース失敗はいずれも初期状態を返す（誤報より沈黙を選ぶ既存方針を踏襲）。ここで例外を
+    投げると systemd timer が failed になり監視が止まる。
+    """
+    events = event_logger.load_events(
+        broker=broker, event_type="signal_outage_detected", limit=1
+    )
+    if not events:
+        return SignalWatchdogState()
+    event = events[0]
+    if str(event.get("outage_state")) != "detected":
+        return SignalWatchdogState()
+    try:
+        occurred_at = datetime.fromisoformat(str(event.get("occurred_at")))
+    except (TypeError, ValueError):
+        logger.warning(
+            "signal_outage_detected の occurred_at をパースできませんでした"
+        )
+        return SignalWatchdogState()
+    return SignalWatchdogState(last_notified_at=occurred_at, in_outage=True)
+
+
 def _emit(
     event_logger: Any,
     notifier: Any,
