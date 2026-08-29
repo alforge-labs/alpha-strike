@@ -1,6 +1,9 @@
 """Webhook サーバーのインテグレーションテスト"""
 
+import asyncio
 import json
+import threading
+import time
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -1001,3 +1004,77 @@ async def test_idempotency_ttl_env_variable_respected(client, monkeypatch):
 
     # TTL=0 なので 2 回とも broker を呼ぶ
     assert mock_exec.call_count == 2
+
+
+class TestEventLoopNotBlocked:
+    """WHY: 2026-08-23 の障害では OpenD が画像認証待ちで無限リトライし、async ハンドラ内の
+    同期呼び出しがイベントループを凍結させた。/webhook も /status も watchdog も止まり、
+    米国 5 営業日の取引が失われた。ハンドラをスレッドプールへ逃がしつつ、発注の原子性
+    （現行は 436-560 行に await が無く割り込まれない）は保つ、という 2 点を固定する。"""
+
+    @pytest.mark.anyio
+    async def test_発注は直列化される(self, client, monkeypatch):
+        """並行実行すると target_reconcile と sell_guard が同じ建玉を二重に読む。"""
+        inside = 0
+        max_inside = 0
+
+        def _slow_route(payload):
+            nonlocal inside, max_inside
+            inside += 1
+            max_inside = max(max_inside, inside)
+            time.sleep(0.05)
+            inside -= 1
+            return {"order_id": "test-order"}
+
+        monkeypatch.setattr(app.state.order_router, "route", _slow_route)
+
+        async def _post(i: int):
+            body = dict(BASE_PAYLOAD, signal_id=f"sig_serial_{i}")
+            return await client.post("/webhook", json=body)
+
+        results = await asyncio.gather(_post(1), _post(2), _post(3))
+
+        assert all(r.status_code == 200 for r in results)
+        assert max_inside == 1, "発注が並行実行された（直列性が壊れている）"
+
+    @pytest.mark.anyio
+    async def test_発注がブロックしてもstatus_eventsは応答する(
+        self, client, monkeypatch
+    ):
+        """イベントループが解放されていることの検証。凍結していればここで固まる。
+
+        NOTE: POST /webhook と GET /status/events はどちらも同じ asyncio イベントループ上の
+        Task として動く。イベントループが POST 側で凍結している間は `asyncio.to_thread` の
+        完了通知（call_soon_threadsafe）もループに戻らないと配送されないため、
+        `await asyncio.to_thread(started.wait, ...)` で「発注が始まった」のを待ってから GET を
+        投げる方式だと、凍結が自然に解けるタイミング（release.wait の内部 timeout）まで GET 側の
+        wait_for 締切も足止めされ、GET は凍結解除後にまっさらな 3 秒を得て成功してしまい
+        TimeoutError を再現できない（検証済み）。
+        そこで GET の Task を POST と同時に生成し、`wait_for` の締切を凍結が始まる前に確定させる。
+        締切のタイマーコールバック自体は凍結中も評価されないが、凍結が解けて
+        イベントループに制御が戻った瞬間に「締切は既に過ぎている」と判定されて即座に
+        TimeoutError になる——という一貫した挙動を利用する。
+        """
+        monkeypatch.setenv("STATUS_API_TOKEN", "test-token")
+        release = threading.Event()
+
+        def _blocking_route(payload):
+            release.wait(timeout=5)
+            return {"order_id": "test-order"}
+
+        monkeypatch.setattr(app.state.order_router, "route", _blocking_route)
+
+        body = dict(BASE_PAYLOAD, signal_id="sig_block_1")
+        post_task = asyncio.create_task(client.post("/webhook", json=body))
+        get_task = asyncio.create_task(
+            client.get(
+                "/status/events",
+                headers={"Authorization": "Bearer test-token"},
+            )
+        )
+        try:
+            resp = await asyncio.wait_for(get_task, timeout=3)
+            assert resp.status_code == 200
+        finally:
+            release.set()
+            await post_task

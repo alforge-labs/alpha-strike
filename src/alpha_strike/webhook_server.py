@@ -15,6 +15,7 @@ import logging
 import os
 import socket
 import sys
+import threading
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from datetime import datetime
@@ -93,6 +94,18 @@ logger = logging.getLogger(__name__)
 
 limiter = Limiter(key_func=get_remote_address)
 event_logger = JsonlEventLogger()
+
+# 発注経路（should_carryover 〜 route）の直列化ロック。
+#
+# ハンドラを def にすると FastAPI がスレッドプールで並行実行するため、そのままだと
+# resolve_target_order (#80) と resolve_sell_quantity (#74) が並行リクエストと同じ建玉を
+# 読んでしまう。現行の async 実装は 436-560 行に await が 1 つも無く割り込まれないので、
+# その原子性をロックで再現する。
+#
+# app.state ではなくモジュールレベルに置く。テスト 6 ファイルが lifespan を経由せず
+# app.state を直接組み立てており、app.state.order_lock にすると全てに初期化が要る。
+# ロックは設定値を持たないプロセス共通の資源なのでこれで足りる。
+_ORDER_LOCK = threading.Lock()
 
 
 DEFAULT_MAINTENANCE_FILE = "/etc/alpha-strike/MAINTENANCE"
@@ -325,7 +338,7 @@ def _record_carryover_queued(payload: WebhookPayload, *, signal_id: str) -> Orde
 
 @app.post("/webhook", response_model=OrderResult, status_code=200)
 @limiter.limit("10/minute")
-async def receive_webhook(
+def receive_webhook(
     request: Request,
     payload: WebhookPayload,
     background_tasks: BackgroundTasks,
@@ -415,246 +428,247 @@ async def receive_webhook(
     # carryover_resubmit_loop が次の市場オープンで route 経由（sell_guard/target_reconcile を
     # 継承）で再発注する。判定不能 / 開場中 / REAL / 非 US は従来どおり即発注する。
     # guards は再発注時に open 時点の実保有で評価させるため、ここでは原シグナルを保持する。
-    market_state_provider = getattr(request.app.state, "market_state_provider", None)
-    if market_state_provider is not None and should_carryover(
-        payload, market_state_provider, trd_env=os.getenv("MOOMOO_TRD_ENV", "SIMULATE")
-    ):
-        return _record_carryover_queued(payload, signal_id=signal_id)
+    with _ORDER_LOCK:
+        market_state_provider = getattr(request.app.state, "market_state_provider", None)
+        if market_state_provider is not None and should_carryover(
+            payload, market_state_provider, trd_env=os.getenv("MOOMOO_TRD_ENV", "SIMULATE")
+        ):
+            return _record_carryover_queued(payload, signal_id=signal_id)
 
-    # target_qty 再解決 (#80): payload が目標絶対保有量を持つ場合、broker の実保有
-    # との差分から発注 side / quantity を解決する（closed-loop）。open-loop desync で
-    # Pine の delta がズレていても、次のシグナルで実保有が target へ収束する。
-    # 判定不能（OpenD 障害等）は fail-open で従来の delta 解釈にフォールバックする。
-    if payload.target_qty is not None and is_target_reconcile_enabled():
-        if payload.broker != "moomoo":
-            logger.warning(
-                "target_qty は moomoo のみ対応。delta 解釈にフォールバック: "
-                "broker=%s ticker=%s",
-                safe_for_log(payload.broker),
-                safe_for_log(payload.ticker),
-            )
-        else:
-            reconcile_provider = getattr(request.app.state, "status_provider", None)
-            if reconcile_provider is not None:
+        # target_qty 再解決 (#80): payload が目標絶対保有量を持つ場合、broker の実保有
+        # との差分から発注 side / quantity を解決する（closed-loop）。open-loop desync で
+        # Pine の delta がズレていても、次のシグナルで実保有が target へ収束する。
+        # 判定不能（OpenD 障害等）は fail-open で従来の delta 解釈にフォールバックする。
+        if payload.target_qty is not None and is_target_reconcile_enabled():
+            if payload.broker != "moomoo":
+                logger.warning(
+                    "target_qty は moomoo のみ対応。delta 解釈にフォールバック: "
+                    "broker=%s ticker=%s",
+                    safe_for_log(payload.broker),
+                    safe_for_log(payload.ticker),
+                )
+            else:
+                reconcile_provider = getattr(request.app.state, "status_provider", None)
+                if reconcile_provider is not None:
+                    try:
+                        target_decision = resolve_target_order(payload, reconcile_provider)
+                    except Exception as exc:  # noqa: BLE001 — fail-open（delta のまま発注継続）
+                        logger.warning(
+                            "target reconcile 判定失敗 (fail-open で delta 発注): "
+                            "ticker=%s error=%s",
+                            safe_for_log(payload.ticker),
+                            exc,
+                        )
+                    else:
+                        if target_decision.action == "skip":
+                            return _record_skipped_order(
+                                payload,
+                                signal_id=signal_id,
+                                internal_order_id=internal_order_id,
+                                started_at=started_at,
+                                reason=target_decision.reason,
+                            )
+                        logger.info("target reconcile: %s", target_decision.reason)
+                        payload = payload.model_copy(
+                            update={
+                                "action": target_decision.side,
+                                "quantity": target_decision.quantity,
+                            }
+                        )
+
+        # over-sell ガード: moomoo の SELL は broker の実保有 (can_sell_qty) を超えないよう
+        # clamp / skip する。Pine→webhook→broker の open-loop desync で実保有を超える SELL
+        # （"Not enough positions"）や建玉ゼロの空売りが届くため、broker 境界で根絶する。
+        # 判定不能（OpenD 障害等）は fail-open で従来通り発注に委ねる。
+        if (
+            is_sell_guard_enabled()
+            and payload.broker == "moomoo"
+            and payload.action == "sell"
+        ):
+            sell_guard_provider = getattr(request.app.state, "status_provider", None)
+            if sell_guard_provider is not None:
                 try:
-                    target_decision = resolve_target_order(payload, reconcile_provider)
-                except Exception as exc:  # noqa: BLE001 — fail-open（delta のまま発注継続）
+                    decision = resolve_sell_quantity(payload, sell_guard_provider)
+                except Exception as exc:  # noqa: BLE001 — fail-open（従来通り broker に委ねる）
                     logger.warning(
-                        "target reconcile 判定失敗 (fail-open で delta 発注): "
-                        "ticker=%s error=%s",
+                        "sell guard 判定失敗 (fail-open で発注継続): ticker=%s error=%s",
                         safe_for_log(payload.ticker),
                         exc,
                     )
                 else:
-                    if target_decision.action == "skip":
+                    if decision.action == "skip":
                         return _record_skipped_order(
                             payload,
                             signal_id=signal_id,
                             internal_order_id=internal_order_id,
                             started_at=started_at,
-                            reason=target_decision.reason,
+                            reason=decision.reason,
                         )
-                    logger.info("target reconcile: %s", target_decision.reason)
-                    payload = payload.model_copy(
-                        update={
-                            "action": target_decision.side,
-                            "quantity": target_decision.quantity,
-                        }
-                    )
+                    if decision.action == "clamp":
+                        logger.warning("sell clamp: %s", decision.reason)
+                        payload = payload.model_copy(
+                            update={"quantity": decision.quantity}
+                        )
 
-    # over-sell ガード: moomoo の SELL は broker の実保有 (can_sell_qty) を超えないよう
-    # clamp / skip する。Pine→webhook→broker の open-loop desync で実保有を超える SELL
-    # （"Not enough positions"）や建玉ゼロの空売りが届くため、broker 境界で根絶する。
-    # 判定不能（OpenD 障害等）は fail-open で従来通り発注に委ねる。
-    if (
-        is_sell_guard_enabled()
-        and payload.broker == "moomoo"
-        and payload.action == "sell"
-    ):
-        sell_guard_provider = getattr(request.app.state, "status_provider", None)
-        if sell_guard_provider is not None:
-            try:
-                decision = resolve_sell_quantity(payload, sell_guard_provider)
-            except Exception as exc:  # noqa: BLE001 — fail-open（従来通り broker に委ねる）
-                logger.warning(
-                    "sell guard 判定失敗 (fail-open で発注継続): ticker=%s error=%s",
-                    safe_for_log(payload.ticker),
-                    exc,
-                )
-            else:
-                if decision.action == "skip":
-                    return _record_skipped_order(
-                        payload,
-                        signal_id=signal_id,
-                        internal_order_id=internal_order_id,
-                        started_at=started_at,
-                        reason=decision.reason,
-                    )
-                if decision.action == "clamp":
-                    logger.warning("sell clamp: %s", decision.reason)
-                    payload = payload.model_copy(
-                        update={"quantity": decision.quantity}
-                    )
+        try:
+            result = order_router.route(payload)
 
-    try:
-        result = order_router.route(payload)
-
-        latency_ms = int((perf_counter() - started_at) * 1000)
-        _oid = result.get("order_id") if isinstance(result, dict) else None
-        broker_order_id = str(_oid) if _oid is not None else None
-        order_event = OrderEvent(
-            event_id=_generate_id("evt"),
-            signal_id=signal_id,
-            order_id=internal_order_id,
-            occurred_at=datetime.now(),
-            broker=payload.broker,
-            asset_class=payload.asset_class,
-            action=payload.action,
-            ticker=payload.ticker,
-            quantity=payload.quantity,
-            status="accepted",
-            request_latency_ms=latency_ms,
-            broker_order_id=broker_order_id,
-            strategy_id=payload.strategy_id,
-            strategy_version=payload.strategy_version,
-            snapshot_id=payload.snapshot_id,
-            run_mode=payload.run_mode,
-            # alpha-forge issue #980
-            portfolio_id=payload.portfolio_id,
-            sub_strategy_id=payload.sub_strategy_id,
-        )
-        event_logger.append(order_event)
-
-        fill_event = fill_service.build(
-            payload=payload,
-            result=result if isinstance(result, dict) else {},
-            signal_id=signal_id,
-            internal_order_id=internal_order_id,
-            broker_order_id=broker_order_id,
-        )
-        if fill_event is not None:
-            for allocated_fill_event in fill_service.allocate(fill_event):
-                event_logger.append(allocated_fill_event)
-                trade_closed_event = fill_service.build_trade_closed(allocated_fill_event)
-                if trade_closed_event is not None:
-                    event_logger.append(trade_closed_event)
-
-        logger.info(
-            "注文成功: broker=%s ticker=%s action=%s qty=%s",
-            safe_for_log(payload.broker),
-            safe_for_log(payload.ticker),
-            safe_for_log(payload.action),
-            safe_for_log(payload.quantity),
-        )
-
-        # #57 Phase 2: moomoo は submission 受理後に実 fill が確定するため、
-        # バックグラウンドで OpenD の最終 order status を照合し、権威イベント
-        # OrderReconciledEvent を永続化する（ntfy 通知は有効時のみ）。
-        # データ正確性は通知設定に依存しないため、notifier.enabled では gate しない。
-        notifier = getattr(request.app.state, "notifier", None)
-        status_provider = getattr(request.app.state, "status_provider", None)
-        if payload.broker == "moomoo" and broker_order_id and status_provider is not None:
-            background_tasks.add_task(
-                reconcile_order,
-                provider=status_provider,
-                event_logger=event_logger,
-                notifier=notifier,
+            latency_ms = int((perf_counter() - started_at) * 1000)
+            _oid = result.get("order_id") if isinstance(result, dict) else None
+            broker_order_id = str(_oid) if _oid is not None else None
+            order_event = OrderEvent(
+                event_id=_generate_id("evt"),
+                signal_id=signal_id,
+                order_id=internal_order_id,
+                occurred_at=datetime.now(),
+                broker=payload.broker,
+                asset_class=payload.asset_class,
+                action=payload.action,
+                ticker=payload.ticker,
+                quantity=payload.quantity,
+                status="accepted",
+                request_latency_ms=latency_ms,
                 broker_order_id=broker_order_id,
-                signal_id=signal_id,
-                order_id=internal_order_id,
-                broker=payload.broker,
-                asset_class=payload.asset_class,
-                ticker=payload.ticker,
-                action=payload.action,
-                quantity=payload.quantity,
                 strategy_id=payload.strategy_id,
                 strategy_version=payload.strategy_version,
                 snapshot_id=payload.snapshot_id,
                 run_mode=payload.run_mode,
-                portfolio_id=payload.portfolio_id,
-                sub_strategy_id=payload.sub_strategy_id,
-                delay_seconds=getattr(request.app.state, "reconcile_delay", 5.0),
-            )
-
-        return OrderResult(
-            status="success",
-            broker=payload.broker,
-            ticker=payload.ticker,
-            message=str(result),
-            signal_id=signal_id,
-            order_id=internal_order_id,
-            broker_order_id=broker_order_id,
-            event_id=order_event.event_id,
-        )
-
-    except HTTPException:
-        raise
-    except (ValueError, ImportError) as e:
-        latency_ms = int((perf_counter() - started_at) * 1000)
-        event_logger.append(
-            OrderEvent(
-                event_id=_generate_id("evt"),
-                signal_id=signal_id,
-                order_id=internal_order_id,
-                occurred_at=datetime.now(),
-                broker=payload.broker,
-                asset_class=payload.asset_class,
-                action=payload.action,
-                ticker=payload.ticker,
-                quantity=payload.quantity,
-                status="failed",
-                request_latency_ms=latency_ms,
-                strategy_id=payload.strategy_id,
-                strategy_version=payload.strategy_version,
-                snapshot_id=payload.snapshot_id,
-                run_mode=payload.run_mode,
-                error_type=type(e).__name__,
                 # alpha-forge issue #980
                 portfolio_id=payload.portfolio_id,
                 sub_strategy_id=payload.sub_strategy_id,
             )
-        )
-        logger.error("設定エラー: %s", e)
-        raise HTTPException(
-            status_code=500,
-            detail="設定エラーが発生しました。管理者にお問い合わせください。",
-        ) from e
-    except Exception as e:
-        latency_ms = int((perf_counter() - started_at) * 1000)
-        event_logger.append(
-            OrderEvent(
-                event_id=_generate_id("evt"),
+            event_logger.append(order_event)
+
+            fill_event = fill_service.build(
+                payload=payload,
+                result=result if isinstance(result, dict) else {},
+                signal_id=signal_id,
+                internal_order_id=internal_order_id,
+                broker_order_id=broker_order_id,
+            )
+            if fill_event is not None:
+                for allocated_fill_event in fill_service.allocate(fill_event):
+                    event_logger.append(allocated_fill_event)
+                    trade_closed_event = fill_service.build_trade_closed(allocated_fill_event)
+                    if trade_closed_event is not None:
+                        event_logger.append(trade_closed_event)
+
+            logger.info(
+                "注文成功: broker=%s ticker=%s action=%s qty=%s",
+                safe_for_log(payload.broker),
+                safe_for_log(payload.ticker),
+                safe_for_log(payload.action),
+                safe_for_log(payload.quantity),
+            )
+
+            # #57 Phase 2: moomoo は submission 受理後に実 fill が確定するため、
+            # バックグラウンドで OpenD の最終 order status を照合し、権威イベント
+            # OrderReconciledEvent を永続化する（ntfy 通知は有効時のみ）。
+            # データ正確性は通知設定に依存しないため、notifier.enabled では gate しない。
+            notifier = getattr(request.app.state, "notifier", None)
+            status_provider = getattr(request.app.state, "status_provider", None)
+            if payload.broker == "moomoo" and broker_order_id and status_provider is not None:
+                background_tasks.add_task(
+                    reconcile_order,
+                    provider=status_provider,
+                    event_logger=event_logger,
+                    notifier=notifier,
+                    broker_order_id=broker_order_id,
+                    signal_id=signal_id,
+                    order_id=internal_order_id,
+                    broker=payload.broker,
+                    asset_class=payload.asset_class,
+                    ticker=payload.ticker,
+                    action=payload.action,
+                    quantity=payload.quantity,
+                    strategy_id=payload.strategy_id,
+                    strategy_version=payload.strategy_version,
+                    snapshot_id=payload.snapshot_id,
+                    run_mode=payload.run_mode,
+                    portfolio_id=payload.portfolio_id,
+                    sub_strategy_id=payload.sub_strategy_id,
+                    delay_seconds=getattr(request.app.state, "reconcile_delay", 5.0),
+                )
+
+            return OrderResult(
+                status="success",
+                broker=payload.broker,
+                ticker=payload.ticker,
+                message=str(result),
                 signal_id=signal_id,
                 order_id=internal_order_id,
-                occurred_at=datetime.now(),
-                broker=payload.broker,
-                asset_class=payload.asset_class,
-                action=payload.action,
-                ticker=payload.ticker,
-                quantity=payload.quantity,
-                status="failed",
-                request_latency_ms=latency_ms,
-                strategy_id=payload.strategy_id,
-                strategy_version=payload.strategy_version,
-                snapshot_id=payload.snapshot_id,
-                run_mode=payload.run_mode,
-                error_type=type(e).__name__,
-                # alpha-forge issue #980
-                portfolio_id=payload.portfolio_id,
-                sub_strategy_id=payload.sub_strategy_id,
+                broker_order_id=broker_order_id,
+                event_id=order_event.event_id,
             )
-        )
-        logger.error(
-            "注文失敗: broker=%s ticker=%s error=%s",
-            safe_for_log(payload.broker),
-            safe_for_log(payload.ticker),
-            safe_for_log(e),
-            exc_info=True,
-        )
-        raise HTTPException(
-            status_code=502,
-            detail="注文の実行に失敗しました。しばらくしてから再試行してください。",
-        ) from e
+
+        except HTTPException:
+            raise
+        except (ValueError, ImportError) as e:
+            latency_ms = int((perf_counter() - started_at) * 1000)
+            event_logger.append(
+                OrderEvent(
+                    event_id=_generate_id("evt"),
+                    signal_id=signal_id,
+                    order_id=internal_order_id,
+                    occurred_at=datetime.now(),
+                    broker=payload.broker,
+                    asset_class=payload.asset_class,
+                    action=payload.action,
+                    ticker=payload.ticker,
+                    quantity=payload.quantity,
+                    status="failed",
+                    request_latency_ms=latency_ms,
+                    strategy_id=payload.strategy_id,
+                    strategy_version=payload.strategy_version,
+                    snapshot_id=payload.snapshot_id,
+                    run_mode=payload.run_mode,
+                    error_type=type(e).__name__,
+                    # alpha-forge issue #980
+                    portfolio_id=payload.portfolio_id,
+                    sub_strategy_id=payload.sub_strategy_id,
+                )
+            )
+            logger.error("設定エラー: %s", e)
+            raise HTTPException(
+                status_code=500,
+                detail="設定エラーが発生しました。管理者にお問い合わせください。",
+            ) from e
+        except Exception as e:
+            latency_ms = int((perf_counter() - started_at) * 1000)
+            event_logger.append(
+                OrderEvent(
+                    event_id=_generate_id("evt"),
+                    signal_id=signal_id,
+                    order_id=internal_order_id,
+                    occurred_at=datetime.now(),
+                    broker=payload.broker,
+                    asset_class=payload.asset_class,
+                    action=payload.action,
+                    ticker=payload.ticker,
+                    quantity=payload.quantity,
+                    status="failed",
+                    request_latency_ms=latency_ms,
+                    strategy_id=payload.strategy_id,
+                    strategy_version=payload.strategy_version,
+                    snapshot_id=payload.snapshot_id,
+                    run_mode=payload.run_mode,
+                    error_type=type(e).__name__,
+                    # alpha-forge issue #980
+                    portfolio_id=payload.portfolio_id,
+                    sub_strategy_id=payload.sub_strategy_id,
+                )
+            )
+            logger.error(
+                "注文失敗: broker=%s ticker=%s error=%s",
+                safe_for_log(payload.broker),
+                safe_for_log(payload.ticker),
+                safe_for_log(e),
+                exc_info=True,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail="注文の実行に失敗しました。しばらくしてから再試行してください。",
+            ) from e
 
 
 @app.post("/events/trade-closed", response_model=EventIngestResult, status_code=200)
@@ -774,7 +788,7 @@ async def health_ready() -> dict:
     response_model=AccountStatus,
     dependencies=[Depends(require_status_token)],
 )
-async def get_status(request: Request, trd_env: str | None = Query(default=None)) -> AccountStatus:
+def get_status(request: Request, trd_env: str | None = Query(default=None)) -> AccountStatus:
     """口座サマリ・保有建玉・直近注文（実ステータス付き）を返す read-only API (#57)。
 
     認証: ``Authorization: Bearer <STATUS_API_TOKEN>``（未設定時は 503 で無効）。
