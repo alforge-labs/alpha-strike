@@ -47,6 +47,7 @@ TradingView → `POST /webhook` → `webhook_server.py` → `OrderRouter` → `B
 - `order_reconcile.py` / `pending_reconcile.py` — 約定照合と未終端注文（GTC 翌営業日約定等）の遅延再照合（#79）。
 - `status_service.py` / `status_auth.py` — 口座ステータス API（`/status`）とそのトークン認証。
 - `notifier.py` — ntfy 通知。
+- `signal_watchdog.py` — シグナル途絶の検知と通知。**v1.3.0 以降はサーバー内の常駐ループではなく、`alpha-strike-watchdog` console script（systemd timer）から単発実行される**。本体のイベントループ凍結やプロセス停止に道連れにされないための分離。
 
 **データモデル** (`models.py`):
 - `WebhookPayload` — リクエストの入力スキーマ（`broker: Literal["oanda", "moomoo"]`）
@@ -93,7 +94,7 @@ moomoo の銘柄コードは `US.AAPL`、`HK.00700` 形式。
 | `CARRYOVER_ENABLED` | クローズ後シグナルの carry-over 再発注ループ（#89）。`1`（デフォルト）または `0` |
 | `CARRYOVER_RESUBMIT_INTERVAL_SECONDS` / `CARRYOVER_LOOKBACK_HOURS` / `CARRYOVER_MAX_RESUBMITS` | carry-over ループの間隔・遡及窓・再発注上限。遡及窓は土日（市場休場）を除いた実効時間で計測するため、金曜クローズ後シグナルも週末をまたいで再発注される（祝日は対象外） |
 | `SIGNAL_WATCHDOG_ENABLED` | シグナル途絶の監視。`1`（デフォルト）または `0`。TradingView アラートのサイレント失効を検知して ntfy 通知する |
-| `SIGNAL_WATCHDOG_INTERVAL_SECONDS` | 途絶チェックの間隔秒（デフォルト `3600`） |
+| `SIGNAL_WATCHDOG_INTERVAL_SECONDS` | 途絶チェックの想定実行間隔秒（デフォルト `3600`）。v1.3.0 以降は systemd timer が実際の間隔を決める |
 | `SIGNAL_WATCHDOG_THRESHOLD_HOURS` | 途絶と判定する実効時間（土日除外、デフォルト `60`）。正常な週末跨ぎは実効 29h、米国祝日込みで 53h のため 2 セッション欠落で発報する |
 | `SIGNAL_WATCHDOG_RENOTIFY_HOURS` | 途絶継続中の再通知の最小間隔（デフォルト `24`） |
 | `SIGNAL_WATCHDOG_BROKER` | 監視対象 broker（デフォルト `moomoo`）。イベントの書き込み先ファイル名にも使う |

@@ -63,6 +63,70 @@ curl -s localhost:8080/health/ready      # {"status":"ready", ...}（OpenD/OANDA
 curl -s -H "Authorization: Bearer $STATUS_API_TOKEN" localhost:8080/status | head
 ```
 
+## 2.5 signal watchdog の systemd timer（v1.3.0+）
+
+シグナル途絶監視は **alpha-strike 本体とは別プロセス**で動く。本体のイベントループが OpenD の
+同期呼び出しで凍結しても、プロセスが落ちても、監視だけは独立して動き続ける
+（2026-08-23 の障害はこれが無くて 5 営業日気づけなかった）。
+
+**unit はリポジトリ管理外**で、既存の `alpha-strike.service` と同じく VM 上にのみ存在する。
+
+```bash
+sudo tee /etc/systemd/system/alpha-strike-watchdog.service >/dev/null <<'EOF'
+[Unit]
+Description=alpha-strike signal outage watchdog (oneshot)
+
+[Service]
+Type=oneshot
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/alpha-strike
+EnvironmentFile=/etc/alpha-strike/.env
+ExecStart=/opt/alpha-strike/.venv/bin/alpha-strike-watchdog
+StandardOutput=journal
+StandardError=journal
+EOF
+
+sudo tee /etc/systemd/system/alpha-strike-watchdog.timer >/dev/null <<'EOF'
+[Unit]
+Description=Run alpha-strike signal outage watchdog hourly
+
+[Timer]
+OnCalendar=hourly
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now alpha-strike-watchdog.timer
+```
+
+`Persistent=true` にすると、VM 停止中に飛ばした実行を起動後に 1 回補完する。
+
+### 本体 unit の変更（v1.3.0+）
+
+`/etc/systemd/system/alpha-strike.service` を `sudo systemctl edit --full alpha-strike` で編集する。
+
+| 項目 | 変更前 | 変更後 | 理由 |
+|---|---|---|---|
+| `Requires=moomoo-opend.service` | あり | **`Wants=moomoo-opend.service`** | moomoo-opend のクラッシュループに巻き込まれるのを止める。OpenD 障害中も webhook を受けてシグナルを記録する |
+| `Restart=on-failure` | | **`Restart=always`** | OpenD 接続失敗で exit 0 終了すると on-failure では再起動されない |
+
+`After=moomoo-opend.service` は維持する（起動順序の指定は引き続き必要）。
+
+### 確認
+
+```bash
+systemctl list-timers alpha-strike-watchdog.timer
+sudo systemctl start alpha-strike-watchdog.service   # 手動 1 回実行
+journalctl -u alpha-strike-watchdog -n 20
+```
+
+`signal watchdog: 最終受信=... 実効 ...h / しきい値 ...h` が出れば機能している。
+**起動ログだけでは「動いている」の確認にならない**ので、この行を見ること。
+
 ## 3. status API のネットワーク保護（Cloudflare Access）
 
 `/status*` は口座残高・建玉という機微情報を返すため、コード層の Bearer トークンに加えて
