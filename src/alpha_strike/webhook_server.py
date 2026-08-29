@@ -99,7 +99,7 @@ event_logger = JsonlEventLogger()
 #
 # ハンドラを def にすると FastAPI がスレッドプールで並行実行するため、そのままだと
 # resolve_target_order (#80) と resolve_sell_quantity (#74) が並行リクエストと同じ建玉を
-# 読んでしまう。現行の async 実装は 436-560 行に await が 1 つも無く割り込まれないので、
+# 読んでしまう。発注区間はもともと await を 1 つも含まず割り込まれない設計だったので、
 # その原子性をロックで再現する。
 #
 # app.state ではなくモジュールレベルに置く。テスト 6 ファイルが lifespan を経由せず

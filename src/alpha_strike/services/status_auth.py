@@ -18,7 +18,7 @@ import os
 from fastapi import Header, HTTPException
 
 
-def require_status_token(authorization: str | None = Header(default=None)) -> None:
+async def require_status_token(authorization: str | None = Header(default=None)) -> None:
     """status 系エンドポイントの FastAPI 依存。検証失敗時に HTTPException を送出する。"""
     token = os.getenv("STATUS_API_TOKEN", "")
     if not token:

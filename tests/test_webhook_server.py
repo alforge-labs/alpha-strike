@@ -1010,7 +1010,8 @@ class TestEventLoopNotBlocked:
     """WHY: 2026-08-23 の障害では OpenD が画像認証待ちで無限リトライし、async ハンドラ内の
     同期呼び出しがイベントループを凍結させた。/webhook も /status も watchdog も止まり、
     米国 5 営業日の取引が失われた。ハンドラをスレッドプールへ逃がしつつ、発注の原子性
-    （現行は 436-560 行に await が無く割り込まれない）は保つ、という 2 点を固定する。"""
+    （発注区間はもともと await を含まず割り込まれない設計だった）は保つ、という
+    2 点を固定する。"""
 
     @pytest.mark.anyio
     async def test_発注は直列化される(self, client, monkeypatch):
@@ -1041,24 +1042,25 @@ class TestEventLoopNotBlocked:
     async def test_発注がブロックしてもstatus_eventsは応答する(
         self, client, monkeypatch
     ):
-        """イベントループが解放されていることの検証。凍結していればここで固まる。
+        """イベントループが解放されていることの検証。凍結していれば応答が遅延する。
 
-        NOTE: POST /webhook と GET /status/events はどちらも同じ asyncio イベントループ上の
-        Task として動く。イベントループが POST 側で凍結している間は `asyncio.to_thread` の
-        完了通知（call_soon_threadsafe）もループに戻らないと配送されないため、
-        `await asyncio.to_thread(started.wait, ...)` で「発注が始まった」のを待ってから GET を
-        投げる方式だと、凍結が自然に解けるタイミング（release.wait の内部 timeout）まで GET 側の
-        wait_for 締切も足止めされ、GET は凍結解除後にまっさらな 3 秒を得て成功してしまい
-        TimeoutError を再現できない（検証済み）。
-        そこで GET の Task を POST と同時に生成し、`wait_for` の締切を凍結が始まる前に確定させる。
-        締切のタイマーコールバック自体は凍結中も評価されないが、凍結が解けて
-        イベントループに制御が戻った瞬間に「締切は既に過ぎている」と判定されて即座に
-        TimeoutError になる——という一貫した挙動を利用する。
+        NOTE: 判定は `asyncio.wait_for(..., timeout=N)` の `TimeoutError` ではなく、GET の
+        実測経過時間（`elapsed`）で行う。イベントループが凍結している間は `wait_for` の
+        締切コールバック自体もループに戻らないと発火しない。凍結が解けた瞬間、
+        「GET タスクの完了」と「締切超過によるキャンセル」がほぼ同時にイベントループへ
+        キューされるため、実装を async 化するほど GET 側が一段と高速に完了するようになり、
+        キャンセルより先に GET が完了して `TimeoutError` を再現できない（内部検証で確認済み。
+        `require_status_token` を非同期化する前は再現できたが、非同期化後は完了が速すぎて
+        レースに負けるようになった）。`wait_for` の timeout はハングを防ぐ安全弁として
+        十分大きく（5 秒 timeout の `release.wait` より長く）取り、RED/GREEN の判定は
+        「応答に何秒かかったか」という決定的な指標に一本化する。
         """
         monkeypatch.setenv("STATUS_API_TOKEN", "test-token")
+        entered = threading.Event()
         release = threading.Event()
 
         def _blocking_route(payload):
+            entered.set()
             release.wait(timeout=5)
             return {"order_id": "test-order"}
 
@@ -1072,9 +1074,26 @@ class TestEventLoopNotBlocked:
                 headers={"Authorization": "Bearer test-token"},
             )
         )
+        started_at = time.monotonic()
         try:
-            resp = await asyncio.wait_for(get_task, timeout=3)
-            assert resp.status_code == 200
+            # timeout=10 は「_blocking_route の release.wait(timeout=5) が自然に解けても
+            # まだ足りない」場合だけに発火する安全弁（テストが無限にハングしないためのもの）。
+            # RED/GREEN そのものは下の elapsed アサーションで判定する。
+            resp = await asyncio.wait_for(get_task, timeout=10)
         finally:
             release.set()
-            await post_task
+            post_resp = await post_task
+        elapsed = time.monotonic() - started_at
+
+        assert elapsed < 1.0, (
+            f"/status/events の応答に {elapsed:.2f} 秒かかった"
+            "（イベントループが凍結している疑いがある）"
+        )
+        assert resp.status_code == 200
+        # entered は GET 成功の直後ではなく post_task 完了後に確認する。GET は
+        # イベントループ側で完結するため、修正後の実装では webhook 側のスレッドプール
+        # ディスパッチより先に完了しうる（GET 側の速さ自体は健全）。post_task が
+        # 完了した時点なら _blocking_route は必ず entered.set() を経て return 済みなので、
+        # ここで確認すれば /webhook が早期returnしただけの空振りを確実に排除できる。
+        assert entered.is_set(), "/webhook が発注区間（ブロック中の route）に到達していない"
+        assert post_resp.status_code == 200
