@@ -107,6 +107,13 @@ event_logger = JsonlEventLogger()
 # ロックは設定値を持たないプロセス共通の資源なのでこれで足りる。
 _ORDER_LOCK = threading.Lock()
 
+# ロック取得の上限。OpenD がハングすると保持者が戻らないため、待ち続けると
+# FastAPI のスレッドプール（anyio 既定 40 本）を食い潰し、後続の
+# signal_received 記録まで止まる（実測: 41 件目からハンドラに到達しない）。
+# 打ち切って 503 を返せば、永久に固まるのは route を掴んだ 1 本だけになる。
+# 併せて、OpenD 復旧時に数日前の陳腐化シグナルが一斉発注されるのも防ぐ。
+_ORDER_LOCK_TIMEOUT_SECONDS = 30.0
+
 
 DEFAULT_MAINTENANCE_FILE = "/etc/alpha-strike/MAINTENANCE"
 
@@ -428,7 +435,9 @@ def receive_webhook(
     # carryover_resubmit_loop が次の市場オープンで route 経由（sell_guard/target_reconcile を
     # 継承）で再発注する。判定不能 / 開場中 / REAL / 非 US は従来どおり即発注する。
     # guards は再発注時に open 時点の実保有で評価させるため、ここでは原シグナルを保持する。
-    with _ORDER_LOCK:
+    if not _ORDER_LOCK.acquire(timeout=_ORDER_LOCK_TIMEOUT_SECONDS):
+        raise HTTPException(status_code=503, detail="broker busy — retry later")
+    try:
         market_state_provider = getattr(request.app.state, "market_state_provider", None)
         if market_state_provider is not None and should_carryover(
             payload, market_state_provider, trd_env=os.getenv("MOOMOO_TRD_ENV", "SIMULATE")
@@ -669,6 +678,8 @@ def receive_webhook(
                 status_code=502,
                 detail="注文の実行に失敗しました。しばらくしてから再試行してください。",
             ) from e
+    finally:
+        _ORDER_LOCK.release()
 
 
 @app.post("/events/trade-closed", response_model=EventIngestResult, status_code=200)

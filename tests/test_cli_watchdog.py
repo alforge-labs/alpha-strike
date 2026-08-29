@@ -18,7 +18,7 @@ class TestWatchdogMain:
             "alpha_strike.cli.run_signal_watchdog_once",
             lambda **kw: called.append(1),
         )
-        assert watchdog_main([]) == 0
+        assert watchdog_main() == 0
         assert called == []
 
     def test_途絶を検知しても0を返す(self, monkeypatch):
@@ -30,7 +30,7 @@ class TestWatchdogMain:
         monkeypatch.setattr(
             "alpha_strike.cli.run_signal_watchdog_once", lambda **kw: object()
         )
-        assert watchdog_main([]) == 0
+        assert watchdog_main() == 0
 
     def test_例外が起きても0を返す(self, monkeypatch):
         """timer の次回実行を止めないため、失敗しても 0 で終わる。"""
@@ -40,7 +40,7 @@ class TestWatchdogMain:
             raise RuntimeError("イベントログ読込失敗")
 
         monkeypatch.setattr("alpha_strike.cli.load_watchdog_state", _boom)
-        assert watchdog_main([]) == 0
+        assert watchdog_main() == 0
 
     def test_run_signal_watchdog_onceへ設定値が渡る(self, monkeypatch):
         captured: dict = {}
@@ -55,7 +55,7 @@ class TestWatchdogMain:
             "alpha_strike.cli.run_signal_watchdog_once",
             lambda **kw: captured.update(kw),
         )
-        assert watchdog_main([]) == 0
+        assert watchdog_main() == 0
         assert captured["threshold_hours"] == 72.0
         assert captured["renotify_hours"] == 12.0
         assert captured["broker"] == "moomoo"

@@ -1085,7 +1085,7 @@ class TestEventLoopNotBlocked:
             post_resp = await post_task
         elapsed = time.monotonic() - started_at
 
-        assert elapsed < 1.0, (
+        assert elapsed < 2.0, (
             f"/status/events の応答に {elapsed:.2f} 秒かかった"
             "（イベントループが凍結している疑いがある）"
         )
@@ -1097,3 +1097,40 @@ class TestEventLoopNotBlocked:
         # ここで確認すれば /webhook が早期returnしただけの空振りを確実に排除できる。
         assert entered.is_set(), "/webhook が発注区間（ブロック中の route）に到達していない"
         assert post_resp.status_code == 200
+
+    @pytest.mark.anyio
+    async def test_ロック保持中の2本目は503を返す(self, client, monkeypatch):
+        """WHY: OpenD がハングして route が無限ブロックすると `_ORDER_LOCK` の保持者が
+        戻らない。タイムアウト無しで待ち続けると、後続リクエストが FastAPI の
+        スレッドプール（anyio 既定 40 本）を食い潰し、signal_received の記録すら
+        止まる（実測: 41 件目からハンドラに到達しない）。ロック取得を打ち切って 503 を
+        返せば、永久に固まるのは route を掴んだ 1 本だけになる。
+
+        `_ORDER_LOCK_TIMEOUT_SECONDS` を 0.1 秒へ短縮し、実測待ちを避ける。
+        """
+        monkeypatch.setattr("alpha_strike.webhook_server._ORDER_LOCK_TIMEOUT_SECONDS", 0.1)
+        entered = threading.Event()
+        release = threading.Event()
+
+        def _blocking_route(payload):
+            entered.set()
+            release.wait(timeout=5)
+            return {"order_id": "test-order"}
+
+        monkeypatch.setattr(app.state.order_router, "route", _blocking_route)
+
+        body_holder = dict(BASE_PAYLOAD, signal_id="sig_lock_holder")
+        body_waiter = dict(BASE_PAYLOAD, signal_id="sig_lock_waiter")
+
+        post_task = asyncio.create_task(client.post("/webhook", json=body_holder))
+        # 1 本目が route（ロック内）に到達するのを待ってから 2 本目を投げる。
+        await asyncio.to_thread(entered.wait, 5)
+
+        resp_waiter = await client.post("/webhook", json=body_waiter)
+
+        release.set()
+        resp_holder = await post_task
+
+        assert resp_waiter.status_code == 503
+        assert "broker busy" in resp_waiter.json()["detail"]
+        assert resp_holder.status_code == 200

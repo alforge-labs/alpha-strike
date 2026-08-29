@@ -6,6 +6,10 @@ PyPI からインストール後、以下のコマンドで Webhook サーバー
     alpha-strike --host 127.0.0.1      # ホスト指定
     alpha-strike --port 9000           # ポート指定
     alpha-strike --version             # バージョン表示
+
+シグナル途絶監視は別の console script として単発実行する（systemd timer から毎時呼ぶ）：
+
+    alpha-strike-watchdog               # 1 回だけ実行して終了（常駐しない）
 """
 
 from __future__ import annotations
@@ -16,6 +20,7 @@ import os
 import sys
 
 import uvicorn
+from dotenv import load_dotenv
 
 from alpha_strike import __version__
 from alpha_strike.event_logger import JsonlEventLogger
@@ -86,22 +91,24 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-def watchdog_main(argv: list[str] | None = None) -> int:
+def watchdog_main() -> int:
     """シグナル途絶監視の単発実行。systemd timer から毎時呼ばれる。
 
     プロセス内の常駐ループではなく別プロセスにすることで、alpha-strike 本体の
     イベントループが OpenD の同期呼び出しで凍結しても、またプロセスが落ちても、
     監視だけは独立して動き続ける（2026-08-23 の障害はこれが無くて 5 営業日気づけなかった）。
 
-    引数は取らない。設定は ``SIGNAL_WATCHDOG_*`` 環境変数から読む。
+    引数は取らない。設定は ``SIGNAL_WATCHDOG_*`` 環境変数から読む。cwd の ``.env`` を
+    ``webhook_server.py`` と同じ方法で読み込む（呼び忘れると本体プロセスとは別の
+    ``LIVE_EVENTS_PATH`` を見てしまい、``find_last_signal`` が (None, None) を返して
+    fail-safe で永久に沈黙する — 監視しているつもりで何も見ていない状態になる）。
 
     Returns:
         常に 0。途絶したかどうかは通知とイベントログで表現する。非ゼロにすると systemd が
         timer を failed 扱いにし、「監視が動いている」ことと「途絶している」ことの区別が
         つかなくなるため。
     """
-    # noqa is needed because argv is accepted for testability
-    _ = argv  # noqa: F841
+    load_dotenv()
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",

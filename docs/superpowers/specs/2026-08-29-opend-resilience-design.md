@@ -204,6 +204,10 @@ with _ORDER_LOCK:
 `/status/events` はイベントログのファイル読み取りだけで OpenD に触らない。イベントループ上に
 残しておくことで、**スレッドプールが webhook で埋まっても診断用エンドポイントとして応答し続ける**。
 
+実装時に判明した制約: `async def` のエンドポイントでも、同期 `def` の依存（`Depends`）を
+挟むと FastAPI がその依存をスレッドプールで実行するため、結局プールのトークンを消費する。
+だから `/status` と `/status/events` が共有する `require_status_token` も `async def` にした。
+
 ### 6.4 タイムアウトは入れない
 
 Python はスレッドを中断できないため `asyncio.wait_for` はスレッドを放置したまま返り、

@@ -114,7 +114,23 @@ sudo systemctl enable --now alpha-strike-watchdog.timer
 | `Requires=moomoo-opend.service` | あり | **`Wants=moomoo-opend.service`** | moomoo-opend のクラッシュループに巻き込まれるのを止める。OpenD 障害中も webhook を受けてシグナルを記録する |
 | `Restart=on-failure` | | **`Restart=always`** | OpenD 接続失敗で exit 0 終了すると on-failure では再起動されない |
 
-`After=moomoo-opend.service` は維持する（起動順序の指定は引き続き必要）。
+`After=moomoo-opend.service` は維持する（起動順序の指定は引き続き必要）。適用には
+
+```bash
+sudo systemctl restart alpha-strike
+```
+
+を忘れないこと（`systemctl edit --full` は unit ファイルを書き換えるだけで、実行中のプロセスには反映されない）。
+
+### systemd が無い環境（docker-compose 等）
+
+`docker-compose.yml` / `Dockerfile` で運用している場合は systemd timer を使えないため、
+host 側の cron から毎時 1 回コンテナ内で `alpha-strike-watchdog` を実行する
+（`docker-compose.yml` のサービス名は `webhook-server`）。
+
+```cron
+0 * * * * cd /opt/alpha-strike && docker compose exec -T webhook-server alpha-strike-watchdog
+```
 
 ### 確認
 
@@ -124,8 +140,15 @@ sudo systemctl start alpha-strike-watchdog.service   # 手動 1 回実行
 journalctl -u alpha-strike-watchdog -n 20
 ```
 
-`signal watchdog: 最終受信=... 実効 ...h / しきい値 ...h` が出れば機能している。
+`signal watchdog: 最終受信=... 実効 ...h / しきい値 ...h` というログ行が出ること。
 **起動ログだけでは「動いている」の確認にならない**ので、この行を見ること。
+
+**確認基準は「`最終受信=` が `None` でないこと」。** `最終受信=None 実効 0.0h` と出た場合は
+この行自体は出ているため一見機能しているように見えるが、実際は監視できていない —
+watchdog プロセスが本体プロセスと異なる `.env`（異なる `LIVE_EVENTS_PATH`）を読んでいる
+食い違いを疑うこと（`alpha-strike-watchdog` の `WorkingDirectory` が `/opt/alpha-strike`
+になっているか、`EnvironmentFile` が本体と同じ `/etc/alpha-strike/.env` を指しているかを
+確認する）。
 
 ## 3. status API のネットワーク保護（Cloudflare Access）
 
@@ -146,6 +169,13 @@ curl -s localhost:8080/health
 > PyPI は同一バージョンの再 publish ができないため、リリース後に不具合が見つかった場合は
 > パッチバージョン（例: 0.5.1）を切り直す。
 
+**v1.3.0 以降からロールバックする場合**は、あわせて timer も止めること。旧版には
+`alpha-strike-watchdog` コマンドが無いため、動かしたままにすると毎時 failed になる。
+
+```bash
+sudo systemctl disable --now alpha-strike-watchdog.timer
+```
+
 ## チェックリスト
 
 - [ ] `uv run pytest` 緑 & `ruff` クリーン
@@ -155,3 +185,6 @@ curl -s localhost:8080/health
 - [ ] `/etc/alpha-strike/.env` に必要な環境変数を追記
 - [ ] `systemctl restart` + `/health` `/health/ready` スモーク
 - [ ] （status API 公開時）Cloudflare Access で `/status*` 保護
+- [ ] （v1.3.0+ 新規導入時）§2.5 の新規 timer を配置し `systemctl enable --now alpha-strike-watchdog.timer`
+- [ ] （v1.3.0+ 新規導入時）本体 unit を `Wants=` / `Restart=always` へ変更し `systemctl restart alpha-strike`
+- [ ] （v1.3.0+ 新規導入時）`alpha-strike-watchdog` を手動 1 回実行し、`最終受信=` に実日時（`None` でない）が出ることを確認
