@@ -17,7 +17,6 @@ VM / サービス停止は検知できない（watchdog もサーバごと死ぬ
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from dataclasses import dataclass
@@ -180,6 +179,36 @@ class SignalWatchdogState:
     in_outage: bool = False
 
 
+def load_watchdog_state(
+    event_logger: Any, *, broker: str = DEFAULT_BROKER
+) -> SignalWatchdogState:
+    """最新の ``signal_outage_detected`` から再通知抑制の状態を復元する。
+
+    単発実行の watchdog はプロセスをまたいで状態を持てないため、自分が書いたイベントを
+    唯一の状態ソースとして使う。新しい状態ファイルは作らない。
+
+    ``load_events`` は新しい順に返すので先頭 1 件を見れば足りる。``recovered``・0 件・
+    パース失敗はいずれも初期状態を返す（誤報より沈黙を選ぶ既存方針を踏襲）。ここで例外を
+    投げると systemd timer が failed になり監視が止まる。
+    """
+    events = event_logger.load_events(
+        broker=broker, event_type="signal_outage_detected", limit=1
+    )
+    if not events:
+        return SignalWatchdogState()
+    event = events[0]
+    if str(event.get("outage_state")) != "detected":
+        return SignalWatchdogState()
+    try:
+        occurred_at = datetime.fromisoformat(str(event.get("occurred_at")))
+    except (TypeError, ValueError):
+        logger.warning(
+            "signal_outage_detected の occurred_at をパースできませんでした"
+        )
+        return SignalWatchdogState()
+    return SignalWatchdogState(last_notified_at=occurred_at, in_outage=True)
+
+
 def _emit(
     event_logger: Any,
     notifier: Any,
@@ -289,38 +318,3 @@ def run_signal_watchdog_once(
         _emit(event_logger, notifier, verdict, current, broker, "recovered")
         return SignalWatchdogState(last_notified_at=None, in_outage=False)
     return state
-
-
-async def signal_watchdog_loop(
-    *,
-    event_logger: Any,
-    notifier: Any = None,
-    interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
-    threshold_hours: float = DEFAULT_THRESHOLD_HOURS,
-    renotify_hours: float = DEFAULT_RENOTIFY_HOURS,
-    broker: str = DEFAULT_BROKER,
-) -> None:
-    """シグナル途絶監視の常駐ループ。lifespan の background task として起動する。
-
-    起動直後に 1 回目を実行し、以後 ``interval_seconds`` ごとに繰り返す。例外はログに
-    残して継続し、``asyncio.CancelledError``（shutdown）でのみ終了する。例外時は
-    ``state`` を更新しないため、次周回は同じ判定からやり直す。
-    """
-    state = SignalWatchdogState()
-    while True:
-        try:
-            # イベントログの読み書きはファイル I/O のためイベントループから退避
-            state = await asyncio.to_thread(
-                run_signal_watchdog_once,
-                event_logger=event_logger,
-                notifier=notifier,
-                state=state,
-                threshold_hours=threshold_hours,
-                renotify_hours=renotify_hours,
-                broker=broker,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — ループは止めない
-            logger.warning("signal watchdog loop でエラー: %s", exc)
-        await asyncio.sleep(interval_seconds)

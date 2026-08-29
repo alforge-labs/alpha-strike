@@ -128,8 +128,8 @@ uv run alpha-strike --reload
 | `NTFY_TOPIC` | — | 約定プッシュ通知の ntfy トピック（#57 Phase 2）。未設定なら通知は no-op |
 | `NTFY_SERVER` | — | ntfy サーバー（既定 `https://ntfy.sh`） |
 | `ORDER_RECONCILE_DELAY_SECONDS` | — | 発注後に order status を照合するまでの待機秒数（既定 `5`） |
-| `SIGNAL_WATCHDOG_ENABLED` | — | TradingView シグナルの途絶監視（既定 `1`=有効）。`0`/`false` で無効化。アラートのサイレント失効でシグナルだけ止まる障害を検知し ntfy 通知する |
-| `SIGNAL_WATCHDOG_INTERVAL_SECONDS` | — | 途絶チェックの実行間隔秒（既定 `3600`）。起動直後にも 1 回実行する |
+| `SIGNAL_WATCHDOG_ENABLED` | — | TradingView シグナルの途絶監視（既定 `1`=有効）。`0`/`false` で無効化。アラートのサイレント失効でシグナルだけ止まる障害を検知し ntfy 通知する。**v1.3.0 以降はサーバープロセス内では動作しない**（常駐ループは廃止）。`alpha-strike-watchdog` を systemd timer または cron から定期実行することが前提 |
+| `SIGNAL_WATCHDOG_INTERVAL_SECONDS` | — | 途絶チェックの想定実行間隔秒（既定 `3600`）。v1.3.0 以降、実際の実行間隔は systemd timer（`alpha-strike-watchdog.timer`）が決める |
 | `SIGNAL_WATCHDOG_THRESHOLD_HOURS` | — | 途絶と判定する実効時間（土日除外、既定 `60`）。正常な週末跨ぎは実効 29h、米国祝日を 1 日挟んでも 53h のため、2 セッション欠落で発報する |
 | `SIGNAL_WATCHDOG_RENOTIFY_HOURS` | — | 途絶継続中の再通知の最小間隔（時間、既定 `24`）。鳴りっぱなしによる通知無視を防ぐ |
 | `SIGNAL_WATCHDOG_BROKER` | — | 監視対象 broker（`moomoo`（既定）/ `oanda`）。検知イベントの書き込み先ファイル名にも使う |

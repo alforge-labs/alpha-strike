@@ -126,8 +126,8 @@ Full operational procedure for paper-trading production:
 | `NTFY_TOPIC` | — | ntfy topic for fill push notifications (#57 Phase 2). No-op when unset |
 | `NTFY_SERVER` | — | ntfy server (default `https://ntfy.sh`) |
 | `ORDER_RECONCILE_DELAY_SECONDS` | — | Seconds to wait before reconciling order status after submission (default `5`) |
-| `SIGNAL_WATCHDOG_ENABLED` | — | Enables signal outage monitoring for TradingView (default `1`=enabled). Set `0`/`false` to disable. Detects a failure where signals silently stop due to alert expiry and sends an ntfy notification |
-| `SIGNAL_WATCHDOG_INTERVAL_SECONDS` | — | Outage check interval in seconds (default `3600`). Also runs once immediately at startup |
+| `SIGNAL_WATCHDOG_ENABLED` | — | Enables signal outage monitoring for TradingView (default `1`=enabled). Set `0`/`false` to disable. Detects a failure where signals silently stop due to alert expiry and sends an ntfy notification. **Since v1.3.0 this no longer runs inside the server process** (the in-process loop was removed); it assumes `alpha-strike-watchdog` is run periodically from a systemd timer or cron |
+| `SIGNAL_WATCHDOG_INTERVAL_SECONDS` | — | Nominal watchdog interval in seconds (default `3600`). Since v1.3.0 the actual cadence is driven by the systemd timer (`alpha-strike-watchdog.timer`) |
 | `SIGNAL_WATCHDOG_THRESHOLD_HOURS` | — | Effective elapsed hours (weekends excluded) after which an outage is declared (default `60`). A normal weekend gap is 29 effective hours, and 53 hours even with a US holiday, so this fires only after 2 sessions are missed |
 | `SIGNAL_WATCHDOG_RENOTIFY_HOURS` | — | Minimum interval between re-notifications while an outage continues (hours, default `24`). Prevents notification fatigue from repeated alerts |
 | `SIGNAL_WATCHDOG_BROKER` | — | Broker to monitor (`moomoo` (default) / `oanda`). Also used as the filename for the detection event log |
