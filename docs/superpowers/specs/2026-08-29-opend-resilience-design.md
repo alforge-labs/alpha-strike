@@ -32,13 +32,17 @@ watchdog は 2026-08-15 に導入済みだったが、**この障害を通知で
 
 ## 2. 根本原因
 
-`webhook_server.py` の **async ハンドラ内に OpenD への同期呼び出しが 3 箇所**ある。
+`webhook_server.py` の **async ハンドラ内に OpenD への同期呼び出しが 5 箇所**ある。
 
 | 行 | 呼び出し | 経路 |
 |---|---|---|
 | 456 | `should_carryover()` → `market_state` | webhook 受付 |
+| 477 | `resolve_target_order()` → `status_provider.get_status` | webhook 受付（#80） |
+| 514 | `resolve_sell_quantity()` → `status_provider.get_status` | webhook 受付（#74） |
 | 537 | `order_router.route(payload)` | **発注（取引経路）** |
 | 822 | `provider.get_status(trd_env=...)` | `/status` 参照 |
+
+うち 4 箇所が `receive_webhook` に集中している。
 
 OpenD が画像認証待ちで無限リトライしている間、これらの呼び出しは戻らない。`async def` の中で
 `await` なしに実行されるため、**1 回の呼び出しでイベントループ全体が凍結**する。凍結すると:
@@ -143,33 +147,58 @@ alpha-strike-watchdog
 
 ## 6. 変更 2 — イベントループ凍結の解消
 
-3 箇所を `asyncio.to_thread` へ退避する。
+### 6.1 ハンドラを `def` にする（本体は変更しない）
 
-### 6.1 発注（537 行目）— 直列性を維持する
+`receive_webhook`（365 行）と `get_status`（814 行）はどちらも `async def` だが、
+**本体に `await` が 1 つも無い**。名前だけ非同期で、実体は完全な同期コードがイベントループ上で
+実行されている。
 
-現在はイベントループ上の同期実行によって**発注が直列化**されている。単純にスレッド化すると
-同一バーの 3 銘柄が並行実行され、`sell_guard`（#74）と `target_reconcile`（#80）が
-**同じ建玉を二重に読む**恐れがある。ロックで直列性を維持する。
+FastAPI は **非 async の `def` エンドポイントを自動的に外部スレッドプールで実行**する。
+したがって宣言を変えるだけで、ハンドラ本体を一切変更せずに全ての OpenD 呼び出しが
+イベントループから外れる。変更は 2 行のみ。
+
+```python
+async def receive_webhook(  →  def receive_webhook(
+async def get_status(       →  def get_status(
+```
+
+これで `receive_webhook` 内の 4 つの OpenD 依存呼び出し（`should_carryover` /
+`resolve_target_order` / `resolve_sell_quantity` / `order_router.route`）が一括でスレッドへ移る。
+
+**個別に `asyncio.to_thread` で包む案は採らない。** 5 箇所を書き換える差分が大きいうえ、
+次項の原子性を壊すため。
+
+### 6.2 原子性を壊さないためにロックを入れる
+
+**現在 436 行（`signal_received` 記録）から 560 行までに `await` が 1 つも無く、この区間は
+他リクエストに割り込まれず原子的に実行されている。** 個別に `to_thread` で包むと await 点が
+生まれ、`resolve_target_order`（#80）と `resolve_sell_quantity`（#74）が並行リクエストと
+同じ建玉を読む競合を新たに作る。`def` 化でも FastAPI のスレッドプールは並行実行するため、
+同じ問題が起きる。
+
+`threading.Lock` で broker 操作区間を直列化し、現行と同じ原子性を保つ。
 
 ```python
 # lifespan で初期化
-app.state.order_lock = asyncio.Lock()
+app.state.order_lock = threading.Lock()
 
-# receive_webhook 内
-async with request.app.state.order_lock:
-    result = await asyncio.to_thread(order_router.route, payload)
+# receive_webhook 内、signal_received の記録より後
+with request.app.state.order_lock:
+    ...  # should_carryover 〜 route 〜 order_event 記録まで
 ```
 
-これでイベントループは解放されつつ、発注順序は現行と同一になる。
+**ロックは `signal_received` の記録（436 行）より後**に置く。OpenD が固まってロック保持者が
+戻らなくなっても、シグナルの記録だけは全リクエストで成立する（成功基準 1）。
 
-OpenD が固まるとロック保持者が戻らず後続の webhook はロック待ちになるが、
-**`signal_received` の記録（436 行目）はロックより前**なので、シグナルは必ず記録される。
+`IdempotencyStore` は既に内部で `threading.Lock` を持つスレッドセーフ実装なので追加の対処は
+不要（`services/idempotency.py` の docstring に明記されている）。
 
-### 6.2 読み取り 2 箇所（456・822 行目）
+### 6.3 `/status/events` は `async def` のまま残す
 
-`should_carryover` と `get_status` は読み取りなのでロック不要。`asyncio.to_thread` で退避するだけ。
+`/status/events` はイベントログのファイル読み取りだけで OpenD に触らない。イベントループ上に
+残しておくことで、**スレッドプールが webhook で埋まっても診断用エンドポイントとして応答し続ける**。
 
-### 6.3 タイムアウトは入れない
+### 6.4 タイムアウトは入れない
 
 Python はスレッドを中断できないため `asyncio.wait_for` はスレッドを放置したまま返り、
 ワーカーを食い潰す。イベントループが解放されれば目的は達成できるので導入しない（YAGNI）。
@@ -192,7 +221,7 @@ Python はスレッドを中断できないため `asyncio.wait_for` はスレ�
 - `watchdog_main` は全例外を握って警告ログを出し、終了コード 0 で終わる。タイマーの
   次回実行を止めないため
 - `load_watchdog_state` はパース失敗時に初期状態を返す（誤報より沈黙を選ぶ既存方針を踏襲）
-- `to_thread` 化した 3 箇所の例外処理は現行と同一（`/webhook` は 502、`/status` は 502）
+- `def` 化した 2 ハンドラの例外処理は現行と同一（本体を変更しないため）
 
 ## 9. テスト計画
 
