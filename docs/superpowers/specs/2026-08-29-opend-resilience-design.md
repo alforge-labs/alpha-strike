@@ -181,10 +181,15 @@ async def get_status(       →  def get_status(
 ```python
 # webhook_server.py のモジュールレベル
 _ORDER_LOCK = threading.Lock()
+_ORDER_LOCK_TIMEOUT_SECONDS = 30.0
 
 # receive_webhook 内、signal_received の記録より後
-with _ORDER_LOCK:
+if not _ORDER_LOCK.acquire(timeout=_ORDER_LOCK_TIMEOUT_SECONDS):
+    raise HTTPException(status_code=503, detail="broker busy — retry later")
+try:
     ...  # should_carryover 〜 route 〜 order_event 記録まで
+finally:
+    _ORDER_LOCK.release()
 ```
 
 **`app.state` ではなくモジュールレベルに置く。** テスト 6 ファイル（`test_webhook_server.py` /
@@ -195,6 +200,24 @@ with _ORDER_LOCK:
 
 **ロックは `signal_received` の記録（436 行）より後**に置く。OpenD が固まってロック保持者が
 戻らなくなっても、シグナルの記録だけは全リクエストで成立する（成功基準 1）。
+
+**ただし、これは「ハンドラに到達できれば」という前提に立つ。** ロック待ちのリクエストは
+FastAPI のスレッドプール（anyio 既定 `CapacityLimiter(40)`）のワーカーを解放せず占有し
+続ける。待機に上限が無いと、待機中のリクエストが積み重なってプール自体を枯渇させ、
+それ以降のリクエストはハンドラの入り口（`signal_received` の記録より前）にすら
+到達できなくなる。
+
+**最終レビューの実測**: `order_router.route` を無限ブロックさせて 60 件を同時投入すると、
+`signal_received` が記録されたのは 40 件ちょうどで、41 件目以降はハンドラ本体に到達し
+なかった。つまりロック取得に打ち切りが無いと、成功基準 1（OpenD が固まってもシグナルは
+記録される）は**プールサイズと同じ 40 リクエストまでしか成立しない**。
+
+これを防ぐため、ロック取得自体にもタイムアウトを設ける。`_ORDER_LOCK_TIMEOUT_SECONDS = 30.0`
+（既定 30 秒）でロック取得を打ち切り、取れなければ 503 を返す。打ち切ればロック待ちの
+ワーカーがすみやかに解放されるため、永久に固まるのは `route` を掴んでいる 1 本だけになる。
+副次効果として、OpenD 復旧時に待機していた最大 39 本の陳腐化シグナルが一斉発注されるのも
+防ぐ。`signal_received` の記録はロック取得より前（436 行）に行われるため、ロック取得に
+失敗して 503 を返した場合でも、そのリクエスト自身のシグナル記録は残る。
 
 `IdempotencyStore` は既に内部で `threading.Lock` を持つスレッドセーフ実装なので追加の対処は
 不要（`services/idempotency.py` の docstring に明記されている）。
@@ -208,10 +231,24 @@ with _ORDER_LOCK:
 挟むと FastAPI がその依存をスレッドプールで実行するため、結局プールのトークンを消費する。
 だから `/status` と `/status/events` が共有する `require_status_token` も `async def` にした。
 
-### 6.4 タイムアウトは入れない
+### 6.4 OpenD 呼び出し自体のタイムアウトは入れない（ロック取得の打ち切りとは別物）
 
 Python はスレッドを中断できないため `asyncio.wait_for` はスレッドを放置したまま返り、
 ワーカーを食い潰す。イベントループが解放されれば目的は達成できるので導入しない（YAGNI）。
+
+**これは §6.2 のロック取得の打ち切りとは別物である。** 混同しないよう区別を明記する。
+
+- **OpenD 呼び出し自体（`order_router.route` など）のタイムアウト**: スレッドを中断できない
+  ため、`asyncio.wait_for` で見た目上は諦めても、放置されたスレッドはブロックしたまま
+  ワーカーを占有し続ける。ワーカーは戻ってこないので、これを入れてもプール枯渇は防げない。
+  だから導入しない
+- **§6.2 のロック取得の打ち切り**: ブロックしているスレッド（`route` を実行中の 1 本）自体には
+  一切手を触れず、他のスレッドが**それを待つのをやめる**だけである。待機側のワーカーは
+  ロック取得の失敗（`acquire(timeout=...)` が `False` を返した時点）ですぐに解放される。
+  むしろプール枯渇を防ぐ側に働くため、こちらは導入している
+
+将来の変更でこの区別を忘れ、「設計はタイムアウトを禁じている」と読んで `_ORDER_LOCK_TIMEOUT_SECONDS`
+を撤去しないこと。撤去すると §6.2 の実測（40 リクエストでプール枯渇）が再発する。
 
 ## 7. 変更 3 — systemd の堅牢化
 
@@ -232,6 +269,8 @@ Python はスレッドを中断できないため `asyncio.wait_for` はスレ�
   次回実行を止めないため
 - `load_watchdog_state` はパース失敗時に初期状態を返す（誤報より沈黙を選ぶ既存方針を踏襲）
 - `def` 化した 2 ハンドラの例外処理は現行と同一（本体を変更しないため）
+- `_ORDER_LOCK` の取得に失敗した場合（§6.2）は 503 `broker busy` を返す。`signal_received`
+  の記録はロック取得より前なので、この場合もシグナル自体の記録は残る
 
 ## 9. テスト計画
 
@@ -259,6 +298,10 @@ TDD で先にテストを書く。
   重ならずに実行される（開始・終了時刻の重複が無い）
 - 発注中もイベントループが解放されていること: 発注をブロックさせた状態で
   `/status/events` が応答する
+- **ロック取得を打ち切って 503 を返すこと**（§6.2）: `route` をブロックさせたまま 2 本目の
+  webhook を投げると、ロック保持中の 1 本目は成功し、2 本目は `_ORDER_LOCK_TIMEOUT_SECONDS`
+  待った末に 503 `broker busy` を返す。テストでは実測待ちを避けるためタイムアウトを
+  0.1 秒へ短縮する
 
 ### 既存テストの回帰
 
@@ -311,13 +354,16 @@ journalctl -u alpha-strike-watchdog -n 20
 - [ ] `load_watchdog_state` がイベントログから状態を復元するテストが緑
 - [ ] 発注が直列化されることを検証するテストが緑
 - [ ] 発注ブロック中に `/status/events` が応答することを検証するテストが緑
+- [ ] ロック取得を打ち切って 503 を返すことを検証するテストが緑
 - [ ] 新規 timer / service の全文と `alpha-strike.service` の差分が `docs/ops/deployment.md` に記載されている
 - [ ] README / CLAUDE.md / mkdocs_src(ja,en) が更新され、mkdocs ビルド成果物も含まれる
 
 ## 12. やらないこと（YAGNI）
 
 - **VM ごと停止した場合の外部監視**（別課題。systemd timer は VM 生存が前提）
-- **OpenD 呼び出しのタイムアウト**（スレッドを中断できず、ワーカーを食い潰すため）
+- **OpenD 呼び出し自体のタイムアウト**（スレッドを中断できず、ワーカーを食い潰すため。
+  **ロック取得の打ち切り（§6.2 の `_ORDER_LOCK_TIMEOUT_SECONDS`）はこれとは別物で、
+  こちらは導入済み**）
 - **OpenD トークンの自動更新**（画像認証が必要で自動化できない）
 - **カーネル自動更新の抑止**（セキュリティ更新を止める方が高リスク。再起動後に自動復帰する
   ようにするのが正しい対処）
