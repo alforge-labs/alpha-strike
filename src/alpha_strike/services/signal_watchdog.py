@@ -17,7 +17,6 @@ VM / サービス停止は検知できない（watchdog もサーバごと死ぬ
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 from dataclasses import dataclass
@@ -319,38 +318,3 @@ def run_signal_watchdog_once(
         _emit(event_logger, notifier, verdict, current, broker, "recovered")
         return SignalWatchdogState(last_notified_at=None, in_outage=False)
     return state
-
-
-async def signal_watchdog_loop(
-    *,
-    event_logger: Any,
-    notifier: Any = None,
-    interval_seconds: float = DEFAULT_INTERVAL_SECONDS,
-    threshold_hours: float = DEFAULT_THRESHOLD_HOURS,
-    renotify_hours: float = DEFAULT_RENOTIFY_HOURS,
-    broker: str = DEFAULT_BROKER,
-) -> None:
-    """シグナル途絶監視の常駐ループ。lifespan の background task として起動する。
-
-    起動直後に 1 回目を実行し、以後 ``interval_seconds`` ごとに繰り返す。例外はログに
-    残して継続し、``asyncio.CancelledError``（shutdown）でのみ終了する。例外時は
-    ``state`` を更新しないため、次周回は同じ判定からやり直す。
-    """
-    state = SignalWatchdogState()
-    while True:
-        try:
-            # イベントログの読み書きはファイル I/O のためイベントループから退避
-            state = await asyncio.to_thread(
-                run_signal_watchdog_once,
-                event_logger=event_logger,
-                notifier=notifier,
-                state=state,
-                threshold_hours=threshold_hours,
-                renotify_hours=renotify_hours,
-                broker=broker,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 — ループは止めない
-            logger.warning("signal watchdog loop でエラー: %s", exc)
-        await asyncio.sleep(interval_seconds)

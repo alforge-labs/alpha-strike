@@ -16,7 +16,6 @@ WHY: TradingView のアラートは現行プランで最大 1 ヶ月しか設定
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime
 from unittest.mock import MagicMock
 
@@ -37,7 +36,6 @@ from alpha_strike.services.signal_watchdog import (
     is_signal_watchdog_enabled,
     load_watchdog_state,
     run_signal_watchdog_once,
-    signal_watchdog_loop,
 )
 
 _THRESHOLD = 60.0
@@ -357,57 +355,6 @@ class TestRunSignalWatchdogOnce:
 
         assert len(notifier.calls) == 1
         assert state.in_outage is True
-
-
-class TestSignalWatchdogLoop:
-    @pytest.mark.anyio
-    async def test_起動直後に実行しintervalごとに繰り返しcancelで終わる(
-        self, monkeypatch
-    ):
-        calls: list[int] = []
-
-        def _fake_once(**kwargs):
-            calls.append(1)
-            return SignalWatchdogState()
-
-        monkeypatch.setattr(
-            "alpha_strike.services.signal_watchdog.run_signal_watchdog_once",
-            _fake_once,
-        )
-        task = asyncio.create_task(
-            signal_watchdog_loop(
-                event_logger=MagicMock(), interval_seconds=0.01
-            )
-        )
-        await asyncio.sleep(0.1)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert len(calls) >= 2
-
-    @pytest.mark.anyio
-    async def test_例外が出てもループは止まらない(self, monkeypatch):
-        """1 周回の失敗で監視が永久に止まると、途絶を検知できなくなる。"""
-        calls: list[int] = []
-
-        def _boom(**kwargs):
-            calls.append(1)
-            raise RuntimeError("読み込み失敗")
-
-        monkeypatch.setattr(
-            "alpha_strike.services.signal_watchdog.run_signal_watchdog_once",
-            _boom,
-        )
-        task = asyncio.create_task(
-            signal_watchdog_loop(
-                event_logger=MagicMock(), interval_seconds=0.01
-            )
-        )
-        await asyncio.sleep(0.1)
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
-        assert len(calls) >= 2  # 1 回目の例外後も呼ばれ続けている
 
 
 def _outage_event(
