@@ -179,13 +179,19 @@ async def get_status(       →  def get_status(
 `threading.Lock` で broker 操作区間を直列化し、現行と同じ原子性を保つ。
 
 ```python
-# lifespan で初期化
-app.state.order_lock = threading.Lock()
+# webhook_server.py のモジュールレベル
+_ORDER_LOCK = threading.Lock()
 
 # receive_webhook 内、signal_received の記録より後
-with request.app.state.order_lock:
+with _ORDER_LOCK:
     ...  # should_carryover 〜 route 〜 order_event 記録まで
 ```
+
+**`app.state` ではなくモジュールレベルに置く。** テスト 6 ファイル（`test_webhook_server.py` /
+`test_status_api.py` / `test_webhook_carryover.py` / `test_webhook_sell_guard.py` /
+`test_webhook_target_reconcile.py` / `test_webhook_reconcile_notify.py`）が lifespan を経由せず
+`app.state` を直接組み立てており、`app.state.order_lock` にすると 6 箇所すべてに初期化を
+足す必要がある。ロックは設定値を持たないプロセス共通の資源なので、モジュールレベルで足りる。
 
 **ロックは `signal_received` の記録（436 行）より後**に置く。OpenD が固まってロック保持者が
 戻らなくなっても、シグナルの記録だけは全リクエストで成立する（成功基準 1）。
