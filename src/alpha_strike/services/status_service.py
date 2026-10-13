@@ -17,6 +17,11 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel
 
+from alpha_strike.services.moomoo_connect import (
+    apply_connect_timeout,
+    bounded_context_class,
+)
+
 
 class AccountSummary(BaseModel):
     """口座サマリ。値が取得できないフィールドは None。"""
@@ -114,10 +119,15 @@ class MoomooStatusProvider:
             if env_str == "SIMULATE"
             else futu.TrdEnv.REAL
         )
-        ctx = futu.OpenSecTradeContext(
+        # OpenSecTradeContext は is_async_connect を受け取らないため、サブクラスで
+        # 無限リトライを回避する（詳細は moomoo_connect.bounded_context_class）。
+        # これが無いと OpenD 死亡時に /status が 524 で無限ハングする
+        ctx_cls = bounded_context_class(futu.OpenSecTradeContext, ret_ok=futu.RET_OK)
+        ctx = ctx_cls(
             filter_trdmarket=futu.TrdMarket.US, host=self.host, port=self.port
         )
         try:
+            apply_connect_timeout(ctx)
             account = self._query_account(ctx, env)
             positions = self._query_positions(ctx, env)
             now = datetime.now()

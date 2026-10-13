@@ -14,6 +14,10 @@ from typing import TYPE_CHECKING
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_fixed
 
 from alpha_strike.models import WebhookPayload
+from alpha_strike.services.moomoo_connect import (
+    apply_connect_timeout,
+    bounded_context_class,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,12 +74,25 @@ def _get_trade_context(
     ac = asset_class.upper()
     market_name = _MARKET_MAP.get(ac, "US")
     market = getattr(futu.TrdMarket, market_name)
-    return futu.OpenSecTradeContext(
+    # OpenSecTradeContext は is_async_connect を受け取らないため、サブクラスで無限
+    # リトライを回避する（詳細は moomoo_connect.bounded_context_class）。これが無いと
+    # 発注経路が固まってロック保持スレッドが戻らず、以後のシグナルが 503 になる
+    ctx_cls = bounded_context_class(futu.OpenSecTradeContext, ret_ok=futu.RET_OK)
+    ctx = ctx_cls(
         filter_trdmarket=market,
         host=host,
         port=port,
         security_firm=futu.SecurityFirm.NONE,
     )
+    try:
+        apply_connect_timeout(ctx)
+    except Exception:
+        # 非同期接続は構築時に非 daemon の再接続タイマーを起動する。タイムアウト設定に
+        # 失敗したまま呼び出し側へ返すと、誰も close() せずタイマーが漏れる。
+        # 例外は握り潰さず伝播させる（未設定のコンテキストで発注すると無限ハングに戻る）
+        ctx.close()
+        raise
+    return ctx
 
 
 def _resolve_time_in_force(asset_class: str, trd_env: str) -> "futu.TimeInForce":
