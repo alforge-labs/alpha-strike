@@ -32,6 +32,9 @@ from alpha_strike.services.market_hours import effective_hours_between
 from alpha_strike.services.market_state import is_market_open, market_open_map
 from alpha_strike.services.order_reconcile import reconcile_order_once
 from alpha_strike.services.sell_guard import is_sell_guard_enabled, resolve_sell_quantity
+from alpha_strike.services.signal_identity import carryover_key as _co_key
+from alpha_strike.services.signal_identity import carryover_signal_id as _co_signal_id
+from alpha_strike.services.signal_identity import intent_key as _intent_key
 from alpha_strike.services.target_reconcile import (
     is_target_reconcile_enabled,
     resolve_target_order,
@@ -54,9 +57,6 @@ _SCAN_LIMIT = 500
 # 解消判定に使う order_recorded の走査上限。queued より大きめに取り、バックテスト等で
 # 一時的に発注イベントが急増しても古い accepted(=解消マーカー)を取りこぼさないようにする。
 _ORDER_SCAN_LIMIT = 2000
-# carry-over 再発注の signal_id サフィックス。ユーザー signal_id との衝突（偽解消）を
-# 避けるため衝突しにくい語にする。
-_CO_SUFFIX = "__carryover"
 
 # moomoo_handler._MARKET_MAP と同じく US 以外（HK / CRYPTO）を判別する。
 # US / INDEX / COMMODITY / FX は US 市場扱い。
@@ -102,29 +102,6 @@ def _float_env(name: str, default: float) -> float:
 def _maps_to_us(asset_class: str) -> bool:
     """asset_class が US 市場（carry-over 対象）にマップされるか。"""
     return asset_class.upper() not in _NON_US_ASSET_CLASSES
-
-
-def _co_signal_id(signal_id: str) -> str:
-    return f"{signal_id}{_CO_SUFFIX}"
-
-
-def _intent_key(event: dict) -> tuple[str, str]:
-    """carry-over intent の識別単位 ``(signal_id, ticker)`` (#126)。
-
-    signal_id は bar 単位で払い出され、同一バーの銘柄別シグナルが同じ値を共有するため、
-    単独では識別できない（1 銘柄の発注で他銘柄まで解消済みと誤判定する）。
-
-    ``action`` を含めないのは、発注時に target_qty closed-loop (#80) や over-sell ガード
-    (#74) が方向を反転させうるため。queued が buy でも order_recorded は sell になり得る
-    ので、action を照合に使うと解消判定が成立せず再発注が繰り返される。
-    """
-    return (str(event.get("signal_id", "")), str(event.get("ticker", "")))
-
-
-def _co_key(key: tuple[str, str]) -> tuple[str, str]:
-    """queued 側の識別キーを、対応する carry-over 発注側のキーへ変換する。"""
-    signal_id, ticker = key
-    return (_co_signal_id(signal_id), ticker)
 
 
 def should_carryover(
