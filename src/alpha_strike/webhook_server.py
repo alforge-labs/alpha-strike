@@ -317,6 +317,50 @@ def _record_skipped_order(
     )
 
 
+def _record_lock_timeout(
+    payload: WebhookPayload,
+    *,
+    signal_id: str,
+    internal_order_id: str,
+    started_at: float,
+) -> None:
+    """発注ロックを取れずに 503 を返す事実を失敗イベントとして残す。
+
+    この raise は ``try:`` ブロックの外で起きるため、記録しないと**イベントログに
+    何の痕跡も残らない**。2026-10-12 の障害で 7 営業日ぶん「シグナルはあるのに
+    発注の痕跡が無い」という読み取りしかできなかったのがこれである。
+    """
+    latency_ms = int((perf_counter() - started_at) * 1000)
+    event_logger.append(
+        OrderEvent(
+            event_id=_generate_id("evt"),
+            signal_id=signal_id,
+            order_id=internal_order_id,
+            occurred_at=datetime.now(),
+            broker=payload.broker,
+            asset_class=payload.asset_class,
+            action=payload.action,
+            ticker=payload.ticker,
+            quantity=payload.quantity,
+            status="failed",
+            request_latency_ms=latency_ms,
+            strategy_id=payload.strategy_id,
+            strategy_version=payload.strategy_version,
+            snapshot_id=payload.snapshot_id,
+            run_mode=payload.run_mode,
+            error_type="OrderLockTimeout",
+            portfolio_id=payload.portfolio_id,
+            sub_strategy_id=payload.sub_strategy_id,
+        )
+    )
+    logger.error(
+        "発注ロックを %.1f 秒で取得できませんでした: ticker=%s signal_id=%s",
+        _ORDER_LOCK_TIMEOUT_SECONDS,
+        safe_for_log(payload.ticker),
+        safe_for_log(signal_id),
+    )
+
+
 def _record_carryover_queued(payload: WebhookPayload, *, signal_id: str) -> OrderResult:
     """クローズ後着シグナルを carry-over キューへ入れ（broker へ送らず）応答を構築する (#89)。
 
@@ -436,6 +480,12 @@ def receive_webhook(
     # 継承）で再発注する。判定不能 / 開場中 / REAL / 非 US は従来どおり即発注する。
     # guards は再発注時に open 時点の実保有で評価させるため、ここでは原シグナルを保持する。
     if not _ORDER_LOCK.acquire(timeout=_ORDER_LOCK_TIMEOUT_SECONDS):
+        _record_lock_timeout(
+            payload,
+            signal_id=signal_id,
+            internal_order_id=internal_order_id,
+            started_at=started_at,
+        )
         raise HTTPException(status_code=503, detail="broker busy — retry later")
     try:
         market_state_provider = getattr(request.app.state, "market_state_provider", None)
