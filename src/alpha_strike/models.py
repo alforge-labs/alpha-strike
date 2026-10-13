@@ -306,6 +306,35 @@ class SignalOutageDetectedEvent(BaseModel):
     threshold_hours: float
 
 
+class OrderOutageDetectedEvent(BaseModel):
+    """発注途絶の検知 / 復旧を記録する運用イベント。
+
+    ``signal_outage_detected`` が「シグナルが届かない」を見るのに対し、こちらは
+    **「シグナルは届いたのに発注まで到達していない」** を見る。2026-10-12 の障害では
+    シグナルが毎日届いていたため signal watchdog は 7 営業日ずっと「正常」と判定し続けた。
+
+    ``outage_state``:
+      - ``detected``: 発注に至らなかったシグナルを検知して通知を試みた
+      - ``recovered``: 最新バッチが全件正常になり復旧通知を試みた
+
+    ``outcome_counts`` は終着点の内訳（``ordered`` / ``in_flight`` / ``pending`` /
+    ``orphaned`` / ``failed`` / ``abandoned`` / ``stalled``）。事後の切り分けに使う。
+
+    下流（forge live replay / alpha-visualizer Live）は本イベントを **約定・保留の
+    いずれでもない運用イベント** として扱い、equity には一切計上しない。
+    """
+
+    event_type: Literal["order_outage_detected"] = "order_outage_detected"
+    event_id: str
+    occurred_at: datetime
+    broker: Literal["oanda", "moomoo"]
+    outage_state: Literal["detected", "recovered"] = "detected"
+    signal_id: str | None = None
+    signal_at: datetime | None = None
+    abnormal_count: int = 0
+    outcome_counts: dict[str, int] = Field(default_factory=dict)
+
+
 class TradeClosedPayload(BaseModel):
     passphrase: str = Field(repr=False)
     signal_id: str
