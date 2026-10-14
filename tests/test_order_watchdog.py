@@ -27,9 +27,16 @@ from alpha_strike.services.order_watchdog import (
     ABNORMAL_KINDS,
     DEFAULT_GRACE_MINUTES,
     DEFAULT_MARGIN_HOURS,
+    DEFAULT_RENOTIFY_HOURS,
     NORMAL_KINDS,
+    OrderWatchdogState,
     SignalOutcomeKind,
     classify_batch,
+    get_order_watchdog_grace_minutes,
+    get_order_watchdog_renotify_hours,
+    is_order_watchdog_enabled,
+    load_order_watchdog_state,
+    run_order_watchdog_once,
 )
 
 _LOOKBACK = 48.0
@@ -768,3 +775,744 @@ class TestEveryInputIsClassified:
                     assert (outcome.kind == "ordered") is resolved, case
                     checked += 1
         assert checked == 8 * 4 * 3, "組合せの取りこぼし"
+
+
+class TestConfig:
+    def test_既定で有効(self, monkeypatch):
+        monkeypatch.delenv("ORDER_WATCHDOG_ENABLED", raising=False)
+        assert is_order_watchdog_enabled() is True
+
+    def test_0で無効化できる(self, monkeypatch):
+        monkeypatch.setenv("ORDER_WATCHDOG_ENABLED", "0")
+        assert is_order_watchdog_enabled() is False
+
+    def test_grace既定は30分(self, monkeypatch):
+        monkeypatch.delenv("ORDER_WATCHDOG_GRACE_MINUTES", raising=False)
+        assert get_order_watchdog_grace_minutes() == DEFAULT_GRACE_MINUTES
+
+    def test_renotify既定は24時間(self, monkeypatch):
+        monkeypatch.delenv("ORDER_WATCHDOG_RENOTIFY_HOURS", raising=False)
+        assert get_order_watchdog_renotify_hours() == DEFAULT_RENOTIFY_HOURS
+
+    def test_grace_とrenotifyは環境変数で上書きできる(self, monkeypatch):
+        monkeypatch.setenv("ORDER_WATCHDOG_GRACE_MINUTES", "45")
+        monkeypatch.setenv("ORDER_WATCHDOG_RENOTIFY_HOURS", "12")
+        assert get_order_watchdog_grace_minutes() == 45.0
+        assert get_order_watchdog_renotify_hours() == 12.0
+
+    @pytest.mark.parametrize("raw", ["abc", "0", "-5", ""])
+    def test_不正値は既定へ戻る(self, monkeypatch, raw):
+        """0 以下や非数値で grace=0 / renotify=0 になると、鳴りっぱなしか即 orphaned になる。"""
+        monkeypatch.setenv("ORDER_WATCHDOG_GRACE_MINUTES", raw)
+        monkeypatch.setenv("ORDER_WATCHDOG_RENOTIFY_HOURS", raw)
+        assert get_order_watchdog_grace_minutes() == DEFAULT_GRACE_MINUTES
+        assert get_order_watchdog_renotify_hours() == DEFAULT_RENOTIFY_HOURS
+
+    @pytest.mark.parametrize("raw", ["1", "true", "YES", " on "])
+    def test_有効を表す値(self, monkeypatch, raw):
+        monkeypatch.setenv("ORDER_WATCHDOG_ENABLED", raw)
+        assert is_order_watchdog_enabled() is True
+
+
+def _mock_logger(signals, orders, carryovers, outages=None):
+    """``load_events`` をイベント種別ごとに引き分ける偽のイベントロガー。"""
+    from unittest.mock import MagicMock
+
+    m = MagicMock()
+
+    def _load(*, broker=None, event_type=None, limit=None, **kw):
+        return {
+            "signal_received": signals,
+            "order_recorded": orders,
+            "signal_carryover_queued": carryovers,
+            "order_outage_detected": outages or [],
+        }.get(event_type, [])
+
+    m.load_events.side_effect = _load
+    return m
+
+
+def _appended(ev):
+    """``append`` に渡されたイベント（1 件だけであること）を返す。"""
+    ev.append.assert_called_once()
+    return ev.append.call_args.args[0]
+
+
+class TestRunOnce:
+    def test_異常で通知とイベントを出す(self):
+        from unittest.mock import MagicMock
+
+        sig_at = datetime(2026, 10, 13, 5, 1)
+        now = datetime(2026, 10, 13, 6, 0)
+        ev = _mock_logger([_signal("S1", "US.TQQQ", sig_at)], [], [])
+        notifier = MagicMock()
+        notifier.notify.return_value = True
+
+        new_state = run_order_watchdog_once(
+            event_logger=ev,
+            notifier=notifier,
+            state=OrderWatchdogState(),
+            lookback_hours=_LOOKBACK,
+            now=now,
+        )
+
+        assert new_state == OrderWatchdogState(last_notified_at=now, in_outage=True)
+        notifier.notify.assert_called_once()
+        event = _appended(ev)
+        assert event.outage_state == "detected"
+        assert event.signal_id == "S1"
+        assert event.signal_at == sig_at
+        assert event.abnormal_count == 1
+        assert event.outcome_counts == {"orphaned": 1}
+        assert event.occurred_at == now
+
+    def test_通知文に銘柄と終着点が入る(self):
+        """操作者が通知だけで『どの銘柄がどう欠落したか』を読み取れること。"""
+        from unittest.mock import MagicMock
+
+        sig_at = datetime(2026, 10, 13, 5, 1)
+        ev = _mock_logger(
+            [_signal("S1", "US.TQQQ", sig_at), _signal("S1", "US.GLD", sig_at)],
+            [_order("S1", "US.GLD", "failed")],
+            [],
+        )
+        notifier = MagicMock()
+
+        run_order_watchdog_once(
+            event_logger=ev,
+            notifier=notifier,
+            state=OrderWatchdogState(),
+            lookback_hours=_LOOKBACK,
+            now=datetime(2026, 10, 13, 6, 0),
+        )
+
+        title, message = notifier.notify.call_args.args
+        assert "発注途絶" in title
+        assert "US.TQQQ: orphaned" in message
+        assert "US.GLD: failed" in message
+        assert notifier.notify.call_args.kwargs["priority"] == "urgent"
+
+    def test_再通知間隔内は沈黙する(self):
+        from unittest.mock import MagicMock
+
+        sig_at = datetime(2026, 10, 13, 5, 1)
+        ev = _mock_logger([_signal("S1", "US.TQQQ", sig_at)], [], [])
+        notifier = MagicMock()
+
+        state = OrderWatchdogState(
+            last_notified_at=datetime(2026, 10, 13, 6, 0), in_outage=True
+        )
+        new_state = run_order_watchdog_once(
+            event_logger=ev,
+            notifier=notifier,
+            state=state,
+            lookback_hours=_LOOKBACK,
+            now=datetime(2026, 10, 13, 12, 0),  # 6 時間後
+        )
+
+        assert new_state == state
+        notifier.notify.assert_not_called()
+        ev.append.assert_not_called()
+
+    @pytest.mark.parametrize(
+        ("now", "renotifies"),
+        [
+            pytest.param(datetime(2026, 10, 14, 5, 59), False, id="23h59m_沈黙"),
+            pytest.param(datetime(2026, 10, 14, 6, 0), True, id="24h_ちょうどで再通知"),
+            pytest.param(datetime(2026, 10, 14, 6, 1), True, id="24h超_再通知"),
+        ],
+    )
+    def test_再通知は24時間ちょうどから(self, now, renotifies):
+        """鳴らなすぎれば見落とし、鳴りすぎれば無視される。境界を固定する。"""
+        from unittest.mock import MagicMock
+
+        sig_at = datetime(2026, 10, 13, 5, 1)
+        ev = _mock_logger([_signal("S1", "US.TQQQ", sig_at)], [], [])
+        notifier = MagicMock()
+        last = datetime(2026, 10, 13, 6, 0)
+
+        new_state = run_order_watchdog_once(
+            event_logger=ev,
+            notifier=notifier,
+            state=OrderWatchdogState(last_notified_at=last, in_outage=True),
+            lookback_hours=_LOOKBACK,
+            renotify_hours=DEFAULT_RENOTIFY_HOURS,
+            now=now,
+        )
+
+        assert new_state.in_outage is True
+        if renotifies:
+            notifier.notify.assert_called_once()
+            assert _appended(ev).outage_state == "detected"
+            assert new_state.last_notified_at == now, "再通知の起点を更新すること"
+        else:
+            notifier.notify.assert_not_called()
+            ev.append.assert_not_called()
+            assert new_state.last_notified_at == last
+
+    def test_途絶中でない状態は再通知抑制の対象にならない(self):
+        """抑制は in_outage のときだけ。last_notified_at が残っていても平常からの
+        新規検知を黙らせてはいけない（不変条件への依存を残さない）。"""
+        from unittest.mock import MagicMock
+
+        sig_at = datetime(2026, 10, 13, 5, 1)
+        now = datetime(2026, 10, 13, 6, 0)
+        ev = _mock_logger([_signal("S1", "US.TQQQ", sig_at)], [], [])
+        notifier = MagicMock()
+
+        new_state = run_order_watchdog_once(
+            event_logger=ev,
+            notifier=notifier,
+            state=OrderWatchdogState(
+                last_notified_at=datetime(2026, 10, 13, 5, 0), in_outage=False
+            ),
+            lookback_hours=_LOOKBACK,
+            now=now,
+        )
+
+        notifier.notify.assert_called_once()
+        assert _appended(ev).outage_state == "detected"
+        assert new_state == OrderWatchdogState(last_notified_at=now, in_outage=True)
+
+    def test_復旧で1回だけ通知する(self):
+        from unittest.mock import MagicMock
+
+        sig_at = datetime(2026, 10, 14, 5, 1)
+        ev = _mock_logger(
+            [_signal("S2", "US.TQQQ", sig_at)],
+            [_order("S2", "US.TQQQ", "accepted")],
+            [],
+        )
+        notifier = MagicMock()
+
+        new_state = run_order_watchdog_once(
+            event_logger=ev,
+            notifier=notifier,
+            state=OrderWatchdogState(
+                last_notified_at=datetime(2026, 10, 13, 6, 0), in_outage=True
+            ),
+            lookback_hours=_LOOKBACK,
+            now=datetime(2026, 10, 14, 6, 0),
+        )
+
+        assert new_state == OrderWatchdogState(last_notified_at=None, in_outage=False)
+        notifier.notify.assert_called_once()
+        assert "再開" in notifier.notify.call_args.args[0]
+        event = _appended(ev)
+        assert event.outage_state == "recovered"
+        assert event.abnormal_count == 0
+        assert event.outcome_counts == {"ordered": 1}
+
+    def test_復旧後の正常周回は何も出さない(self):
+        """途絶中でないときの正常は日常。毎周回「再開」を飛ばしてはいけない。"""
+        from unittest.mock import MagicMock
+
+        sig_at = datetime(2026, 10, 14, 5, 1)
+        ev = _mock_logger(
+            [_signal("S2", "US.TQQQ", sig_at)],
+            [_order("S2", "US.TQQQ", "accepted")],
+            [],
+        )
+        notifier = MagicMock()
+
+        state = OrderWatchdogState()
+        new_state = run_order_watchdog_once(
+            event_logger=ev,
+            notifier=notifier,
+            state=state,
+            lookback_hours=_LOOKBACK,
+            now=datetime(2026, 10, 14, 6, 0),
+        )
+
+        assert new_state == state
+        notifier.notify.assert_not_called()
+        ev.append.assert_not_called()
+
+    def test_carryover待ちは異常にも復旧にも数えない(self):
+        """クローズ後シグナルの正常な待機(in_flight)で鳴らないこと。"""
+        from unittest.mock import MagicMock
+
+        sig_at = datetime(2026, 10, 13, 5, 1)
+        ev = _mock_logger(
+            [_signal("S1", "US.TQQQ", sig_at)],
+            [],
+            [_carryover("S1", "US.TQQQ", "queued")],
+        )
+        notifier = MagicMock()
+
+        new_state = run_order_watchdog_once(
+            event_logger=ev,
+            notifier=notifier,
+            state=OrderWatchdogState(),
+            lookback_hours=_LOOKBACK,
+            now=datetime(2026, 10, 13, 12, 0),
+        )
+
+        assert new_state == OrderWatchdogState()
+        notifier.notify.assert_not_called()
+        ev.append.assert_not_called()
+
+    def test_graceは引数で上書きできる(self):
+        """grace を渡し忘れて既定 30 分で判定すると、設定が効いていないのに気づけない。"""
+        from unittest.mock import MagicMock
+
+        sig_at = datetime(2026, 10, 13, 5, 1)
+        now = datetime(2026, 10, 13, 6, 0)  # シグナルから 59 分
+        notifier = MagicMock()
+
+        run_order_watchdog_once(
+            event_logger=_mock_logger([_signal("S1", "US.TQQQ", sig_at)], [], []),
+            notifier=notifier,
+            state=OrderWatchdogState(),
+            lookback_hours=_LOOKBACK,
+            grace_minutes=120.0,
+            now=now,
+        )
+        notifier.notify.assert_not_called()  # 120 分猶予なので pending（判定保留）
+
+        run_order_watchdog_once(
+            event_logger=_mock_logger([_signal("S1", "US.TQQQ", sig_at)], [], []),
+            notifier=notifier,
+            state=OrderWatchdogState(),
+            lookback_hours=_LOOKBACK,
+            grace_minutes=DEFAULT_GRACE_MINUTES,
+            now=now,
+        )
+        notifier.notify.assert_called_once()  # 30 分猶予なので orphaned
+
+    @pytest.mark.parametrize(
+        ("lookback", "margin", "alerts"),
+        [
+            pytest.param(48.0, 1.0, False, id="既定_まだcarryover待ち"),
+            pytest.param(24.0, 1.0, True, id="lookbackを縮めればstalled"),
+            pytest.param(48.0, 0.0, True, id="marginを外せばstalled"),
+        ],
+    )
+    def test_lookbackとmarginが判定に渡る(self, lookback, margin, alerts):
+        """シグナルから実効 48.98h 後。carryover の打ち切り目安 lookback+margin との比較。"""
+        from unittest.mock import MagicMock
+
+        sig_at = datetime(2026, 10, 13, 5, 1)
+        ev = _mock_logger(
+            [_signal("S1", "US.TQQQ", sig_at)],
+            [],
+            [_carryover("S1", "US.TQQQ", "queued")],
+        )
+        notifier = MagicMock()
+
+        run_order_watchdog_once(
+            event_logger=ev,
+            notifier=notifier,
+            state=OrderWatchdogState(),
+            lookback_hours=lookback,
+            margin_hours=margin,
+            now=datetime(2026, 10, 15, 6, 0),
+        )
+
+        assert notifier.notify.called is alerts
+        if alerts:
+            assert _appended(ev).outcome_counts == {"stalled": 1}
+
+    def test_renotify_hoursは引数で上書きできる(self):
+        from unittest.mock import MagicMock
+
+        sig_at = datetime(2026, 10, 13, 5, 1)
+        notifier = MagicMock()
+        state = OrderWatchdogState(
+            last_notified_at=datetime(2026, 10, 13, 6, 0), in_outage=True
+        )
+
+        run_order_watchdog_once(
+            event_logger=_mock_logger([_signal("S1", "US.TQQQ", sig_at)], [], []),
+            notifier=notifier,
+            state=state,
+            lookback_hours=_LOOKBACK,
+            renotify_hours=4.0,
+            now=datetime(2026, 10, 13, 12, 0),  # 6 時間後 = 4 時間間隔なら再通知
+        )
+
+        notifier.notify.assert_called_once()
+
+    def test_全てのロードがbrokerを引き継ぐ(self):
+        """broker を取り違えると別ブローカーのイベントを判定する。"""
+        sig_at = datetime(2026, 10, 13, 5, 1)
+        ev = _mock_logger([_signal("S1", "US.TQQQ", sig_at)], [], [])
+
+        run_order_watchdog_once(
+            event_logger=ev,
+            state=OrderWatchdogState(),
+            lookback_hours=_LOOKBACK,
+            broker="oanda",
+            now=datetime(2026, 10, 13, 6, 0),
+        )
+
+        loaded = {
+            c.kwargs["event_type"]: c.kwargs["broker"]
+            for c in ev.load_events.call_args_list
+        }
+        assert loaded == {
+            "signal_received": "oanda",
+            "order_recorded": "oanda",
+            "signal_carryover_queued": "oanda",
+        }
+        assert _appended(ev).broker == "oanda"
+
+
+class TestEmitIsAttemptNotSuccess:
+    """通知の成否や記録の成否に、状態遷移を左右させない。
+
+    「試みた」であって「成功した」ではない。通知経路が壊れていても検知履歴は残す。
+    """
+
+    def _orphaned(self):
+        sig_at = datetime(2026, 10, 13, 5, 1)
+        return _mock_logger([_signal("S1", "US.TQQQ", sig_at)], [], [])
+
+    def test_通知の送信に失敗してもイベントは記録する(self):
+        from unittest.mock import MagicMock
+
+        ev = self._orphaned()
+        notifier = MagicMock()
+        notifier.notify.return_value = False
+        notifier.enabled = True
+
+        new_state = run_order_watchdog_once(
+            event_logger=ev,
+            notifier=notifier,
+            state=OrderWatchdogState(),
+            lookback_hours=_LOOKBACK,
+            now=datetime(2026, 10, 13, 6, 0),
+        )
+
+        assert _appended(ev).outage_state == "detected"
+        assert new_state.in_outage is True
+
+    def test_通知先が未設定でもイベントは記録する(self):
+        ev = self._orphaned()
+
+        new_state = run_order_watchdog_once(
+            event_logger=ev,
+            notifier=None,
+            state=OrderWatchdogState(),
+            lookback_hours=_LOOKBACK,
+            now=datetime(2026, 10, 13, 6, 0),
+        )
+
+        assert _appended(ev).outage_state == "detected"
+        assert new_state.in_outage is True
+
+    def test_イベントの追記に失敗しても例外にせず状態は進める(self):
+        """例外は systemd timer を failed にして監視を止める。"""
+        from unittest.mock import MagicMock
+
+        ev = self._orphaned()
+        ev.append.side_effect = OSError("disk full")
+        notifier = MagicMock()
+        now = datetime(2026, 10, 13, 6, 0)
+
+        new_state = run_order_watchdog_once(
+            event_logger=ev,
+            notifier=notifier,
+            state=OrderWatchdogState(),
+            lookback_hours=_LOOKBACK,
+            now=now,
+        )
+
+        notifier.notify.assert_called_once()
+        assert new_state == OrderWatchdogState(last_notified_at=now, in_outage=True)
+
+
+class TestNeverFalseRecovery:
+    """途絶中に判定できなくなっても「復旧」を出さないこと。
+
+    v1.2.0 で実際に踏んだ穴。読み込み失敗が続くと、操作者が最後に見たメッセージが
+    「復旧しました」のまま全部止まる。
+    """
+
+    def test_シグナル0件では復旧通知を出さない(self):
+        from unittest.mock import MagicMock
+
+        m = MagicMock()
+        m.load_events.return_value = []
+        notifier = MagicMock()
+
+        state = OrderWatchdogState(
+            last_notified_at=datetime(2026, 10, 13, 6, 0), in_outage=True
+        )
+        new_state = run_order_watchdog_once(
+            event_logger=m,
+            notifier=notifier,
+            state=state,
+            lookback_hours=_LOOKBACK,
+            now=datetime(2026, 10, 15, 6, 0),
+        )
+
+        assert new_state == state, "途絶状態を維持すること"
+        notifier.notify.assert_not_called()
+        m.append.assert_not_called()
+
+    def test_シグナルが読めず発注だけ読めても復旧通知を出さない(self):
+        """シグナルの読み込みだけ失敗した場合。発注が見えているのは復旧の証拠ではない。"""
+        from unittest.mock import MagicMock
+
+        ev = _mock_logger(
+            [],
+            [_order("S2", "US.TQQQ", "accepted")],
+            [_carryover("S2", "US.TQQQ", "queued")],
+        )
+        notifier = MagicMock()
+
+        state = OrderWatchdogState(
+            last_notified_at=datetime(2026, 10, 13, 6, 0), in_outage=True
+        )
+        new_state = run_order_watchdog_once(
+            event_logger=ev,
+            notifier=notifier,
+            state=state,
+            lookback_hours=_LOOKBACK,
+            now=datetime(2026, 10, 15, 6, 0),
+        )
+
+        assert new_state == state
+        notifier.notify.assert_not_called()
+        ev.append.assert_not_called()
+
+    def test_pendingだけの周回でも復旧通知を出さない(self):
+        from unittest.mock import MagicMock
+
+        sig_at = datetime(2026, 10, 14, 5, 1)
+        m = _mock_logger([_signal("S2", "US.TQQQ", sig_at)], [], [])
+        notifier = MagicMock()
+
+        state = OrderWatchdogState(
+            last_notified_at=datetime(2026, 10, 13, 6, 0), in_outage=True
+        )
+        new_state = run_order_watchdog_once(
+            event_logger=m,
+            notifier=notifier,
+            state=state,
+            lookback_hours=_LOOKBACK,
+            now=datetime(2026, 10, 14, 5, 20),  # grace 以内
+        )
+
+        assert new_state == state
+        notifier.notify.assert_not_called()
+        m.append.assert_not_called()
+
+    def test_判定不能の周回は途絶していない状態も変えない(self):
+        """途絶中でないときに判定不能が来ても、新たに途絶を宣言しない。"""
+        from unittest.mock import MagicMock
+
+        m = MagicMock()
+        m.load_events.return_value = []
+        notifier = MagicMock()
+
+        new_state = run_order_watchdog_once(
+            event_logger=m,
+            notifier=notifier,
+            state=OrderWatchdogState(),
+            lookback_hours=_LOOKBACK,
+            now=datetime(2026, 10, 15, 6, 0),
+        )
+
+        assert new_state == OrderWatchdogState()
+        notifier.notify.assert_not_called()
+        m.append.assert_not_called()
+
+
+class TestLoadState:
+    def test_detectedから途絶中を復元する(self):
+        from unittest.mock import MagicMock
+
+        m = MagicMock()
+        m.load_events.return_value = [
+            {
+                "event_type": "order_outage_detected",
+                "outage_state": "detected",
+                "occurred_at": "2026-10-13T06:00:00",
+            }
+        ]
+        s = load_order_watchdog_state(m)
+        assert s.in_outage is True
+        assert s.last_notified_at == datetime(2026, 10, 13, 6, 0)
+
+    def test_recoveredは初期状態(self):
+        from unittest.mock import MagicMock
+
+        m = MagicMock()
+        m.load_events.return_value = [
+            {
+                "event_type": "order_outage_detected",
+                "outage_state": "recovered",
+                "occurred_at": "2026-10-14T06:00:00",
+            }
+        ]
+        assert load_order_watchdog_state(m) == OrderWatchdogState()
+
+    def test_0件は初期状態(self):
+        from unittest.mock import MagicMock
+
+        m = MagicMock()
+        m.load_events.return_value = []
+        assert load_order_watchdog_state(m) == OrderWatchdogState()
+
+    def test_パース失敗は初期状態(self):
+        from unittest.mock import MagicMock
+
+        m = MagicMock()
+        m.load_events.return_value = [
+            {"outage_state": "detected", "occurred_at": "broken"}
+        ]
+        assert load_order_watchdog_state(m) == OrderWatchdogState()
+
+    def test_最新1件のorder_outage_detectedだけを見る(self):
+        """別種のイベントや別ブローカーの履歴で状態が決まってはいけない。"""
+        from unittest.mock import MagicMock
+
+        m = MagicMock()
+        m.load_events.return_value = []
+        load_order_watchdog_state(m, broker="oanda")
+        m.load_events.assert_called_once_with(
+            broker="oanda", event_type="order_outage_detected", limit=1
+        )
+
+
+class TestStateSurvivesProcessBoundary:
+    """状態は自分が書いたイベントだけから復元する（単発実行・状態ファイル無し）。
+
+    実際の JSONL に書いて、別のロガーインスタンス（= 別プロセス相当）で読み戻す。
+    モックでは ``occurred_at`` のシリアライズ形式の食い違いを検出できない。
+    """
+
+    @staticmethod
+    def _seed(path, events):
+        import json
+
+        with path.open("a", encoding="utf-8") as fp:
+            for e in events:
+                fp.write(json.dumps(e, ensure_ascii=False) + "\n")
+
+    def _run(self, tmp_path, now):
+        from unittest.mock import MagicMock
+
+        from alpha_strike.event_logger import JsonlEventLogger
+
+        logger = JsonlEventLogger(tmp_path)  # 毎回作り直す = プロセスを跨ぐ
+        notifier = MagicMock()
+        state = load_order_watchdog_state(logger)
+        new_state = run_order_watchdog_once(
+            event_logger=logger,
+            notifier=notifier,
+            state=state,
+            lookback_hours=_LOOKBACK,
+            now=now,
+        )
+        return state, new_state, notifier
+
+    def test_検知_復旧_再検知を別プロセスで辿る(self, tmp_path):
+        # 1 回目: 10-13 のシグナルが発注されないまま 1 時間経過 → 検知
+        self._seed(
+            tmp_path / "2026-10-13.moomoo.jsonl",
+            [_signal("S1", "US.TQQQ", datetime(2026, 10, 13, 5, 1))],
+        )
+        before, after, notifier = self._run(tmp_path, datetime(2026, 10, 13, 6, 0))
+        assert before == OrderWatchdogState()
+        assert after.in_outage is True
+        notifier.notify.assert_called_once()
+
+        # 2 回目: 同じ状況の 6 時間後。書き残したイベントから途絶中を復元し沈黙する
+        before, after, notifier = self._run(tmp_path, datetime(2026, 10, 13, 12, 0))
+        assert before.in_outage is True
+        assert before.last_notified_at == datetime(2026, 10, 13, 6, 0)
+        assert after == before
+        notifier.notify.assert_not_called()
+
+        # 3 回目: 翌日のバッチが発注された → 復旧を 1 回だけ通知
+        self._seed(
+            tmp_path / "2026-10-14.moomoo.jsonl",
+            [
+                _signal("S2", "US.TQQQ", datetime(2026, 10, 14, 5, 1)),
+                _order("S2", "US.TQQQ", "accepted"),
+            ],
+        )
+        before, after, notifier = self._run(tmp_path, datetime(2026, 10, 14, 6, 0))
+        assert before.in_outage is True
+        assert after == OrderWatchdogState()
+        notifier.notify.assert_called_once()
+
+        # 4 回目: 復旧後の正常は沈黙。復旧イベントから初期状態が復元される
+        before, after, notifier = self._run(tmp_path, datetime(2026, 10, 14, 7, 0))
+        assert before == OrderWatchdogState()
+        assert after == before
+        notifier.notify.assert_not_called()
+
+        # 5 回目: また欠落 → 復旧済みなので再び検知する（再通知抑制に巻き込まれない）
+        self._seed(
+            tmp_path / "2026-10-15.moomoo.jsonl",
+            [_signal("S3", "US.TQQQ", datetime(2026, 10, 15, 5, 1))],
+        )
+        before, after, notifier = self._run(tmp_path, datetime(2026, 10, 15, 6, 0))
+        assert before == OrderWatchdogState()
+        assert after.in_outage is True
+        notifier.notify.assert_called_once()
+
+
+class TestOutcomeCountsVocabulary:
+    """``outcome_counts`` は ``dict[str, int]`` で型の制約が無い。
+
+    分類側の語彙とずれても静かに通り、事後の切り分けに使うイベントが壊れる。
+    イベントに書く前にここで固定する。
+    """
+
+    def _every_kind_batch(self):
+        """7 種の終着点を 1 バッチに揃える（同一 signal_id・時刻は種別ごと）。"""
+        old = datetime(2026, 10, 9, 5, 1)  # 金。実効 48h + margin を十分に超える
+        yday = datetime(2026, 10, 14, 5, 1)
+        recent = datetime(2026, 10, 15, 5, 50)  # now の 10 分前 = grace 以内
+        signals = [
+            _signal("S1", "US.ORD", yday),
+            _signal("S1", "US.FLY", yday),
+            _signal("S1", "US.STL", old),
+            _signal("S1", "US.FAIL", yday),
+            _signal("S1", "US.ABN", yday),
+            _signal("S1", "US.ORP", yday),
+            _signal("S1", "US.PND", recent),
+        ]
+        orders = [_order("S1", "US.ORD", "accepted"), _order("S1", "US.FAIL", "failed")]
+        carryovers = [
+            _carryover("S1", "US.FLY", "queued"),
+            _carryover("S1", "US.STL", "queued"),
+            _carryover("S1", "US.ABN", "abandoned"),
+        ]
+        return signals, orders, carryovers
+
+    def test_counts_のキーは語彙内に収まる(self):
+        signals, orders, carryovers = self._every_kind_batch()
+        v = classify_batch(
+            signals=signals,
+            orders=orders,
+            carryovers=carryovers,
+            now=datetime(2026, 10, 15, 6, 0),
+            lookback_hours=_LOOKBACK,
+        )
+        vocabulary = ABNORMAL_KINDS | NORMAL_KINDS | {"pending"}
+        assert set(v.counts()) <= vocabulary
+        # 全種が実際に現れる = この検査が全語彙を網羅している
+        assert set(v.counts()) == vocabulary, "7 種を揃えられていない"
+
+    def test_outcome_countsのキーは語彙内に収まる(self):
+        """classify_batch の結果ではなく、イベントに実際に書かれた値で検査する。"""
+        signals, orders, carryovers = self._every_kind_batch()
+        ev = _mock_logger(signals, orders, carryovers)
+
+        run_order_watchdog_once(
+            event_logger=ev,
+            state=OrderWatchdogState(),
+            lookback_hours=_LOOKBACK,
+            now=datetime(2026, 10, 15, 6, 0),
+        )
+
+        counts = _appended(ev).outcome_counts
+        assert set(counts) <= ABNORMAL_KINDS | NORMAL_KINDS | {"pending"}
+        assert all(isinstance(n, int) and n > 0 for n in counts.values())
+        assert sum(counts.values()) == 7
