@@ -24,7 +24,15 @@ from dotenv import load_dotenv
 
 from alpha_strike import __version__
 from alpha_strike.event_logger import JsonlEventLogger
+from alpha_strike.services.carryover import get_carryover_lookback_hours
 from alpha_strike.services.notifier import NtfyNotifier
+from alpha_strike.services.order_watchdog import (
+    get_order_watchdog_grace_minutes,
+    get_order_watchdog_renotify_hours,
+    is_order_watchdog_enabled,
+    load_order_watchdog_state,
+    run_order_watchdog_once,
+)
 from alpha_strike.services.signal_watchdog import (
     get_signal_watchdog_broker,
     get_signal_watchdog_renotify_hours,
@@ -92,13 +100,18 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def watchdog_main() -> int:
-    """シグナル途絶監視の単発実行。systemd timer から毎時呼ばれる。
+    """シグナル途絶と発注途絶の監視の単発実行。systemd timer から毎時呼ばれる。
 
     プロセス内の常駐ループではなく別プロセスにすることで、alpha-strike 本体の
     イベントループが OpenD の同期呼び出しで凍結しても、またプロセスが落ちても、
     監視だけは独立して動き続ける（2026-08-23 の障害はこれが無くて 5 営業日気づけなかった）。
 
-    引数は取らない。設定は ``SIGNAL_WATCHDOG_*`` 環境変数から読む。cwd の ``.env`` を
+    2 本のチェック（シグナル途絶 / 発注途絶）を 1 つの timer で回す。timer を増やすと
+    「timer 登録を忘れると監視がサイレントに消える」リスクが倍になるため、既存の
+    ``alpha-strike-watchdog`` に相乗りさせている。2 本は独立した ``try`` で囲み、
+    片方の例外でもう片方の監視を落とさない。
+
+    引数は取らない。設定は ``SIGNAL_WATCHDOG_*`` / ``ORDER_WATCHDOG_*`` 環境変数から読む。cwd の ``.env`` を
     ``webhook_server.py`` と同じ方法で読み込む（呼び忘れると本体プロセスとは別の
     ``LIVE_EVENTS_PATH`` を見てしまい、``find_last_signal`` が (None, None) を返して
     fail-safe で永久に沈黙する — 監視しているつもりで何も見ていない状態になる）。
@@ -114,9 +127,6 @@ def watchdog_main() -> int:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
     try:
-        if not is_signal_watchdog_enabled():
-            logger.info("signal watchdog は無効化されています")
-            return 0
         notifier = NtfyNotifier()
         if not notifier.enabled:
             logger.warning(
@@ -124,17 +134,41 @@ def watchdog_main() -> int:
             )
         event_logger = JsonlEventLogger()
         broker = get_signal_watchdog_broker()
-        state = load_watchdog_state(event_logger, broker=broker)
-        run_signal_watchdog_once(
-            event_logger=event_logger,
-            notifier=notifier,
-            state=state,
-            threshold_hours=get_signal_watchdog_threshold_hours(),
-            renotify_hours=get_signal_watchdog_renotify_hours(),
-            broker=broker,
-        )
+    except Exception as exc:  # noqa: BLE001 — 初期化の失敗でも timer を failed にしない
+        logger.warning("watchdog の初期化でエラー: %s", exc)
+        return 0
+
+    # 2 つのチェックは独立して回す。片方の例外でもう片方の監視を落とさない。
+    try:
+        if is_signal_watchdog_enabled():
+            run_signal_watchdog_once(
+                event_logger=event_logger,
+                notifier=notifier,
+                state=load_watchdog_state(event_logger, broker=broker),
+                threshold_hours=get_signal_watchdog_threshold_hours(),
+                renotify_hours=get_signal_watchdog_renotify_hours(),
+                broker=broker,
+            )
+        else:
+            logger.info("signal watchdog は無効化されています")
     except Exception as exc:  # noqa: BLE001 — timer の次回実行を止めない
         logger.warning("signal watchdog の実行でエラー: %s", exc)
+
+    try:
+        if is_order_watchdog_enabled():
+            run_order_watchdog_once(
+                event_logger=event_logger,
+                notifier=notifier,
+                state=load_order_watchdog_state(event_logger, broker=broker),
+                lookback_hours=get_carryover_lookback_hours(),
+                grace_minutes=get_order_watchdog_grace_minutes(),
+                renotify_hours=get_order_watchdog_renotify_hours(),
+                broker=broker,
+            )
+        else:
+            logger.info("order watchdog は無効化されています")
+    except Exception as exc:  # noqa: BLE001 — timer の次回実行を止めない
+        logger.warning("order watchdog の実行でエラー: %s", exc)
     return 0
 
 
