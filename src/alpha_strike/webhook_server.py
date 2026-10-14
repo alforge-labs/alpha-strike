@@ -322,6 +322,17 @@ def _record_skipped_order(
     )
 
 
+def _forget_idempotency(request: Request, idem_key: IdempotencyKey | None) -> None:
+    """注文を出していない失敗の冪等キーを解放し、再送を受け付けられるようにする。
+
+    キーはロック取得より前に記録されるため、失敗後も残すと TTL のあいだ再送が
+    ``duplicate`` の 200 で黙って捨てられる。carry-over 再発注の失敗時の扱い
+    （``services/carryover.py``）とそろえる。
+    """
+    if idem_key is not None:
+        request.app.state.idempotency.forget(idem_key)
+
+
 def _record_lock_timeout(
     payload: WebhookPayload,
     *,
@@ -465,6 +476,7 @@ def receive_webhook(
     # TradingView 側の自動リトライを止める（409 にすると無限リトライの危険）。
     # 判定単位は (signal_id, broker, ticker, action)。signal_id は bar 単位で払い出され、
     # 同一バーの銘柄別シグナルが同じ値を共有するため単独ではキーにできない (#126)。
+    idem_key: IdempotencyKey | None = None
     if payload.signal_id:
         idem: IdempotencyStore = request.app.state.idempotency
         idem_key = IdempotencyKey(
@@ -539,6 +551,7 @@ def receive_webhook(
             internal_order_id=internal_order_id,
             started_at=started_at,
         )
+        _forget_idempotency(request, idem_key)
         raise HTTPException(status_code=503, detail="broker busy — retry later")
     try:
         market_state_provider = getattr(request.app.state, "market_state_provider", None)
@@ -635,8 +648,12 @@ def receive_webhook(
                             update={"quantity": decision.quantity}
                         )
 
+        # route が返った後の例外は注文がブローカーに届いている。冪等キーを解放すると
+        # 再送で二重発注になるため、解放は route 自体が失敗したときに限る。
+        routed = False
         try:
             result = order_router.route(payload)
+            routed = True
 
             latency_ms = int((perf_counter() - started_at) * 1000)
             _oid = result.get("order_id") if isinstance(result, dict) else None
@@ -754,6 +771,8 @@ def receive_webhook(
                 )
             )
             logger.error("設定エラー: %s", e)
+            if not routed:
+                _forget_idempotency(request, idem_key)
             raise HTTPException(
                 status_code=500,
                 detail="設定エラーが発生しました。管理者にお問い合わせください。",
@@ -790,6 +809,8 @@ def receive_webhook(
                 safe_for_log(e),
                 exc_info=True,
             )
+            if not routed:
+                _forget_idempotency(request, idem_key)
             raise HTTPException(
                 status_code=502,
                 detail="注文の実行に失敗しました。しばらくしてから再試行してください。",
