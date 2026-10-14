@@ -331,6 +331,8 @@ TradingView Webhook は **ネットワーク再送・alert 再評価・Restart �
 | `signal_id` 指定あり + TTL 内に **同一 broker/ticker/action** で再到達 | broker 呼び出しスキップ、200 `{"status":"success", "message":"duplicate signal_id — already processed"}` を返す |
 | `signal_id` 指定あり + TTL 内に **別の ticker または action** で到達 | 別シグナルとして通常の発注フローを実行 |
 | `signal_id` 指定あり + TTL 経過後の再到達 | 通常の発注フローを実行（TTL 切れで履歴破棄済み） |
+| `signal_id` 指定あり + 前回が発注失敗（503 / 502 / 500）で TTL 内に再到達 | 通常の発注フローを実行（注文を出せなかった失敗では履歴を破棄するため、再送で発注をやり直せる） |
+| `signal_id` 指定あり + 前回は broker が受理し、その後の記録処理で 502 になって TTL 内に再到達 | broker 呼び出しスキップ、200 duplicate（注文は届いているため、再送で二重発注しない） |
 | `signal_id` 未指定 | idempotency 検証スキップ（従来通り、毎回 broker に流れる） |
 
 ### 設定
