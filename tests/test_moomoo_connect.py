@@ -80,7 +80,8 @@ def _parse_child_result(done: subprocess.CompletedProcess[str]) -> object:
     for line in done.stdout.splitlines():
         if line.startswith("RESULT:"):
             return json.loads(line[len("RESULT:") :])
-    pytest.fail(
+    # pytest.fail ではなく raise にすると、全経路が return か raise で終わることが静的に分かる
+    raise AssertionError(
         "子プロセスの出力に RESULT: 行がありません。\n"
         f"stdout:\n{done.stdout}\nstderr:\n{done.stderr}"
     )
@@ -125,10 +126,12 @@ os._exit(0)
                 timeout=20.0,
             )
         except subprocess.TimeoutExpired:
-            pytest.fail(
+            # pytest.fail ではなく明示的に raise する。CodeQL は pytest.fail が戻らないことを
+            # 知らないため、以降の done が未初期化だと誤検知する（py/uninitialized-local-variable）
+            raise AssertionError(
                 "get_market_state が 20 秒以内に戻りませんでした。"
                 "futu コンストラクタの無限リトライに掛かっています"
-            )
+            ) from None
 
         assert done.returncode == 0, done.stderr
         # 取得失敗は空 dict で返す（is_market_open が None に倒す）
@@ -230,7 +233,8 @@ class TestPrivateMemberGuard:
 
     def test_init_connect_syncが無ければRuntimeError(self):
         class _NoInit:
-            def _wait_reconnect(self, n: int = 6) -> None: ...
+            def _wait_reconnect(self, n: int = 6) -> None:
+                pass
 
         with pytest.raises(RuntimeError, match="_init_connect_sync"):
             bounded_context_class(_NoInit, ret_ok=0)
@@ -404,10 +408,12 @@ os._exit(0)
                 timeout=20.0,
             )
         except subprocess.TimeoutExpired:
-            pytest.fail(
+            # pytest.fail ではなく明示的に raise する。CodeQL は pytest.fail が戻らないことを
+            # 知らないため、以降の done が未初期化だと誤検知する（py/uninitialized-local-variable）
+            raise AssertionError(
                 "トレード系コンテキストの accinfo_query が 20 秒以内に戻りませんでした。"
                 "futu コンストラクタの無限リトライに掛かっています"
-            )
+            ) from None
 
         assert done.returncode == 0, done.stderr
         out = _parse_child_result(done)
