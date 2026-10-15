@@ -342,7 +342,7 @@ def _emit(
             f"{_describe(verdict)}\n"
             f"シグナル: {at_str} JST (signal_id={verdict.signal_id})\n"
             "OpenD の認証失効を疑ってください。"
-            "/status が 524 で /status/events が 200 ならほぼ確定です。"
+            "/status が 502（Connect timeout）で /status/events が 200 ならほぼ確定です。"
         )
         tags = ["rotating_light"]
         priority: str | None = "urgent"

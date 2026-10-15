@@ -13,6 +13,7 @@ OpenD が画像認証待ちで固まると 1 回の呼び出しでイベント�
 
 from __future__ import annotations
 
+import subprocess
 from unittest.mock import MagicMock
 
 import pytest
@@ -67,6 +68,24 @@ class TestInvalidTimeoutNeverDisablesTheGuard:
         assert called > 0
 
 
+def _parse_child_result(done: subprocess.CompletedProcess[str]) -> object:
+    """子プロセスの stdout から ``RESULT:`` 行を探して JSON として返す。
+
+    futu はコンソールログを ``sys.stdout`` に吐く（``futu/common/ft_logger.py``）。
+    子が結果を print してから ``os._exit`` するまでに再接続 Timer が 1 行書く窓があるため、
+    最終行を決め打ちするとときどき落ちて flake 扱いで無視される。前置で行を特定する。
+    """
+    import json
+
+    for line in done.stdout.splitlines():
+        if line.startswith("RESULT:"):
+            return json.loads(line[len("RESULT:") :])
+    pytest.fail(
+        "子プロセスの出力に RESULT: 行がありません。\n"
+        f"stdout:\n{done.stdout}\nstderr:\n{done.stderr}"
+    )
+
+
 class TestMarketStateReturnsWithinBoundedTime:
     """OpenD が居なくても get_market_state が有界時間で戻ること。
 
@@ -89,12 +108,11 @@ closed_port = probe.getsockname()[1]
 probe.close()
 
 provider = MoomooMarketStateProvider(host="127.0.0.1", port=closed_port)
-print(json.dumps(provider.get_market_state(["US.TQQQ"])), flush=True)
+print("RESULT:" + json.dumps(provider.get_market_state(["US.TQQQ"])), flush=True)
 os._exit(0)
 """
 
     def test_OpenD不在でも有界時間で戻る(self, monkeypatch):
-        import json
         import subprocess
         import sys
 
@@ -114,7 +132,7 @@ os._exit(0)
 
         assert done.returncode == 0, done.stderr
         # 取得失敗は空 dict で返す（is_market_open が None に倒す）
-        assert json.loads(done.stdout.strip().splitlines()[-1]) == {}
+        assert _parse_child_result(done) == {}
 
 
 class _FakeContextBase:
@@ -369,12 +387,11 @@ try:
     ret, _ = ctx.accinfo_query(trd_env=futu.TrdEnv.SIMULATE)
 finally:
     ctx.close()
-print(json.dumps({"ret": ret, "ret_ok": futu.RET_OK}), flush=True)
+print("RESULT:" + json.dumps({"ret": ret, "ret_ok": futu.RET_OK}), flush=True)
 os._exit(0)
 """
 
     def test_OpenD不在でも有界時間で失敗を返す(self, monkeypatch):
-        import json
         import subprocess
         import sys
 
@@ -393,6 +410,6 @@ os._exit(0)
             )
 
         assert done.returncode == 0, done.stderr
-        out = json.loads(done.stdout.strip().splitlines()[-1])
+        out = _parse_child_result(done)
         # 接続できていないので RET_OK ではなく失敗が返る（下流の ret != RET_OK 経路）
         assert out["ret"] != out["ret_ok"]

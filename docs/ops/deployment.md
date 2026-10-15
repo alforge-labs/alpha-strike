@@ -174,9 +174,14 @@ order watchdog: signal_id=... 判定 N 件（正常 M / 異常 K / 保留 P）
 /opt/alpha-strike/.venv/bin/python -c "import futu; print(futu.__version__)"
 ```
 
-動作確認済みのバージョンは **10.09.6908** です。これと違う場合は、デプロイ後に
-`sudo systemctl start alpha-strike-watchdog.service` のログで
-`order watchdog` の行が出ることと、`/status` が HTTP 200 を返すことを必ず確認してください。
+動作確認済みのバージョンは **10.09.6908**（`uv.lock` 表記では `10.9.6908`）です。
+`futu.__version__` はゼロ埋めの `10.09.6908` を返し、`uv.lock` と `uv pip show` は
+`10.9.6908` と表記しますが、同じ版です。
+
+これと違う場合は、デプロイ後に `/status` が HTTP 200 **かつ `account` の値（`total_assets` 等）が `None`（JSON では `null`）でない**
+ことを必ず確認してください（OpenD に接続できないと `/status` は 502 `Connect timeout` を返します）。
+SDK 不一致の確認は、口座と建玉の中身まで見る次節の「SIMULATE スモークテスト」で行ってください
+（`order watchdog` のログ行は futu を一切使わないので、SDK 不一致の確認にはなりません）。
 
 ### SIMULATE スモークテスト（v1.4.0 で追加・必須）
 
