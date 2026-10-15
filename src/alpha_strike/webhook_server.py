@@ -587,6 +587,7 @@ def receive_webhook(
                             stage="target_reconcile",
                             exc=exc,
                         )
+                        _forget_idempotency(request, idem_key)
                         raise HTTPException(
                             status_code=502, detail=_STATUS_UNAVAILABLE_DETAIL
                         ) from exc
@@ -630,6 +631,7 @@ def receive_webhook(
                         stage="sell_guard",
                         exc=exc,
                     )
+                    _forget_idempotency(request, idem_key)
                     raise HTTPException(
                         status_code=502, detail=_STATUS_UNAVAILABLE_DETAIL
                     ) from exc

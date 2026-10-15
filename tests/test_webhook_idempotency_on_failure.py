@@ -1,7 +1,8 @@
 """発注に失敗した webhook の再送が、冪等キーで黙って捨てられないことのテスト。
 
 WHY: 冪等キーはロック取得より前に記録される。失敗パス（ロックタイムアウトの 503・
-route 例外の 502・設定エラーの 500）でキーを残すと、TTL（既定 10 分）のあいだ同じ
+route 例外の 502・口座照会失敗で発注を止める fail-closed の 502・設定エラーの 500）で
+キーを残すと、TTL（既定 10 分）のあいだ同じ
 シグナルの再送は ``duplicate signal_id — already processed`` と HTTP 200 で返り、
 **注文が出ないのに呼び出し側からは成功に見える**。2026-10-12 の発注途絶障害の
 恒久対策（黙って注文が消える経路を残さない）と同じクラスの欠陥。
@@ -162,3 +163,42 @@ async def test_route成功後の後処理で失敗した場合は再送を重複
     assert second.status_code == 200
     assert "duplicate" in second.json()["message"].lower()
     assert route.calls == 1, "発注済みのシグナルが再送で二重発注された"
+
+
+class _BrokenProvider:
+    """口座照会が失敗する provider（OpenD 再起動中などの参照用接続だけの障害）。"""
+
+    def get_status(self, *, trd_env: str | None = None):  # noqa: ARG002
+        raise RuntimeError("OpenD down")
+
+
+@pytest.mark.parametrize(
+    ("guard_env", "overrides"),
+    [
+        # sell guard の照会失敗で発注を止める経路
+        ("MOOMOO_SELL_POSITION_GUARD", {"action": "sell"}),
+        # target_qty 再解決の照会失敗で発注を止める経路
+        ("MOOMOO_TARGET_QTY_RECONCILE", {"target_qty": 4.0}),
+    ],
+)
+@pytest.mark.anyio
+async def test_口座照会失敗502の後の再送は発注される(client, monkeypatch, guard_env, overrides):
+    """fail-closed は broker へ送らずに 502 で抜ける。注文は出ていない。"""
+    route = _Route()
+    monkeypatch.setattr(app.state.order_router, "route", route)
+    monkeypatch.setenv(guard_env, "1")
+    monkeypatch.setattr(app.state, "status_provider", _BrokenProvider(), raising=False)
+    body = {**_moomoo_buy(), **overrides}
+
+    first = await client.post("/webhook", json=body)
+    assert first.status_code == 502
+    assert "fail-closed" in first.json()["detail"]
+    assert route.calls == 0
+
+    # 2 回目: 照会を使わない構成での再送（照会の復旧の代わり。どちらも route まで進む）。
+    monkeypatch.setattr(app.state, "status_provider", None, raising=False)
+    limiter._storage.reset()
+    second = await client.post("/webhook", json=body)
+
+    _assert_not_duplicate(second)
+    assert route.calls == 1
