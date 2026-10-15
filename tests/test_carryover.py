@@ -17,6 +17,7 @@ from alpha_strike.models import OrderEvent, SignalCarryoverQueuedEvent, WebhookP
 from alpha_strike.services.carryover import (
     DEFAULT_MAX_RESUBMITS,
     _co_signal_id,
+    _resubmit_intent,
     build_carryover_queued_event,
     carryover_resubmit_loop,
     find_carryover_intents,
@@ -485,6 +486,94 @@ def test_run_target_reconcile_resolves_side_and_qty(tmp_path):
     )
     assert n == 1
     assert router.calls[0].action == "buy"
+    assert router.calls[0].quantity == 2.0
+
+
+class _BrokenStatusProvider:
+    """口座照会が失敗する provider（OpenD 再起動中などの参照用接続だけの障害）。"""
+
+    def get_status(self, *, trd_env: str | None = None) -> AccountStatus:
+        raise RuntimeError("OpenD down")
+
+
+@pytest.mark.parametrize(
+    ("action", "target_qty"),
+    [("buy", 3.0), ("sell", None)],
+    ids=["target_reconcile", "sell_guard"],
+)
+def test_resubmit_status_failure_fails_closed_and_stays_unresolved(tmp_path, action, target_qty):
+    """照会失敗 → broker へ送らず failed(StatusUnavailable) を残し、False（未解消）を返す。
+
+    ユーザーの判断で fail-open から fail-closed に変更した。部分障害で建玉チェック無しの
+    再発注が空売りになりうるため。True（解消済み）を返すと intent が永久に消えるので、
+    未解消のまま次の周回へ回し、OpenD が戻れば再発注で通るようにする。
+    """
+    logger = JsonlEventLogger(base_path=tmp_path)
+    _seed_queued(logger, "sig-fc", action=action, qty=2.0, target_qty=target_qty)
+    (intent,), _ = find_carryover_intents(logger)
+    router = _FakeRouter()
+
+    resolved = _resubmit_intent(
+        intent, status_provider=_BrokenStatusProvider(), event_logger=logger,
+        order_router=router, fill_service=FillEventService(logger),
+        idempotency=IdempotencyStore(),
+    )
+
+    assert resolved is False
+    assert router.calls == []
+    orders = logger.load_events(broker="moomoo", event_type="order_recorded")
+    assert [(e["signal_id"], e["status"], e["error_type"]) for e in orders] == [
+        (_co_signal_id("sig-fc"), "failed", "StatusUnavailable")
+    ]
+    # 未解消のまま残り、次の周回で再発注の対象になる
+    to_resubmit, _ = find_carryover_intents(logger)
+    assert len(to_resubmit) == 1
+
+
+def test_resubmit_after_status_recovers_goes_through(tmp_path):
+    """照会失敗で止めた intent は、冪等キーを解放して次の周回で即再発注される。
+
+    TTL 満了まで止まると、OpenD 復旧後もしばらく再発注されない取りこぼしになる。
+    """
+    logger = JsonlEventLogger(base_path=tmp_path)
+    _seed_queued(logger, "sig-rec", action="sell", qty=2.0)
+    router = _FakeRouter()
+    ms = _FakeMarketState({"US.TLT": "AFTERNOON"})
+    idem = IdempotencyStore(ttl_seconds=600)
+    common = dict(
+        market_state_provider=ms, event_logger=logger, order_router=router,
+        fill_service=FillEventService(logger), idempotency=idem,
+    )
+
+    assert run_carryover_resubmit_once(status_provider=_BrokenStatusProvider(), **common) == 0
+    assert router.calls == []
+
+    healthy = _status_provider(
+        positions=[PositionRecord(code="US.TLT", qty=2.0, can_sell_qty=2.0)],
+        orders=[OrderRecord(code="US.TLT", order_id="br_999", order_status="FILLED_ALL", dealt_qty=2.0)],
+    )
+    assert run_carryover_resubmit_once(status_provider=healthy, **common) == 1
+    assert len(router.calls) == 1
+
+
+def test_resubmit_without_status_provider_still_orders(tmp_path):
+    """status_provider 未設定はガードを使わない構成 → 従来どおり再発注する。
+
+    照会の失敗ではないので fail-closed にしない（全再発注が止まるのを防ぐ）。
+    """
+    logger = JsonlEventLogger(base_path=tmp_path)
+    _seed_queued(logger, "sig-none", action="sell", qty=2.0, target_qty=0.0)
+    (intent,), _ = find_carryover_intents(logger)
+    router = _FakeRouter()
+
+    resolved = _resubmit_intent(
+        intent, status_provider=None, event_logger=logger,
+        order_router=router, fill_service=FillEventService(logger),
+        idempotency=IdempotencyStore(),
+    )
+
+    assert resolved is True
+    assert len(router.calls) == 1
     assert router.calls[0].quantity == 2.0
 
 

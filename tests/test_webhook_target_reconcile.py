@@ -240,8 +240,14 @@ async def test_reconcile_disabled_passes_delta_through(client, monkeypatch):
 
 
 @pytest.mark.anyio
-async def test_provider_failure_fails_open_to_delta(client, monkeypatch):
-    """StatusProvider 障害（OpenD down 等）→ fail-open で delta のまま発注継続。"""
+async def test_provider_failure_fails_closed(client, monkeypatch):
+    """StatusProvider 障害（OpenD down 等）→ fail-closed で broker へ送らず 502。
+
+    ユーザーの判断で fail-open から fail-closed に変更した。参照用の接続だけが死に
+    発注用は通る部分障害では、建玉チェック無しの発注が Pine の数量ずれで空売りに
+    なりうるため。止めた事実は failed（StatusUnavailable）として 1 件だけ残し、
+    発注途絶 watchdog が鳴るようにする。
+    """
     monkeypatch.delenv("MOOMOO_TARGET_QTY_RECONCILE", raising=False)
 
     class _BrokenProvider:
@@ -249,6 +255,30 @@ async def test_provider_failure_fails_open_to_delta(client, monkeypatch):
             raise RuntimeError("OpenD down")
 
     app.state.status_provider = _BrokenProvider()
+    calls: list = []
+    with patch(
+        "alpha_strike.handlers.moomoo_handler.MoomooHandler.execute",
+        _capturing_execute(calls),
+    ):
+        resp = await client.post("/webhook", json=_moomoo_payload())
+
+    assert resp.status_code == 502
+    assert "fail-closed" in resp.json()["detail"]
+    assert calls == []
+    orders = _events(client._tmp_path, "order_recorded")
+    assert [(o["status"], o["error_type"]) for o in orders] == [
+        ("failed", "StatusUnavailable")
+    ]
+
+
+@pytest.mark.anyio
+async def test_no_status_provider_still_orders_with_delta(client, monkeypatch):
+    """status_provider 未設定はガードを使わない構成 → 従来どおり delta のまま発注する。
+
+    照会の失敗ではないので fail-closed にしない（全発注が止まるのを防ぐ）。
+    """
+    monkeypatch.delenv("MOOMOO_TARGET_QTY_RECONCILE", raising=False)
+    app.state.status_provider = None
     calls: list = []
     with patch(
         "alpha_strike.handlers.moomoo_handler.MoomooHandler.execute",

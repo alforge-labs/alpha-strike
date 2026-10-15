@@ -17,6 +17,11 @@ from typing import Any, Protocol
 
 from pydantic import BaseModel
 
+from alpha_strike.services.moomoo_connect import (
+    apply_connect_timeout,
+    bounded_context_class,
+)
+
 
 class AccountSummary(BaseModel):
     """口座サマリ。値が取得できないフィールドは None。"""
@@ -114,10 +119,16 @@ class MoomooStatusProvider:
             if env_str == "SIMULATE"
             else futu.TrdEnv.REAL
         )
-        ctx = futu.OpenSecTradeContext(
+        # OpenSecTradeContext は is_async_connect を受け取らないため、サブクラスで
+        # 無限リトライを回避する（詳細は moomoo_connect.bounded_context_class）。
+        # これが無いと OpenD 死亡時に /status が無限ハングする（Cloudflare 経由で 524）。
+        # 有界化後は接続タイムアウトでクエリが失敗し、/status は 502（Connect timeout）を返す
+        ctx_cls = bounded_context_class(futu.OpenSecTradeContext, ret_ok=futu.RET_OK)
+        ctx = ctx_cls(
             filter_trdmarket=futu.TrdMarket.US, host=self.host, port=self.port
         )
         try:
+            apply_connect_timeout(ctx)
             account = self._query_account(ctx, env)
             positions = self._query_positions(ctx, env)
             now = datetime.now()
@@ -140,7 +151,12 @@ class MoomooStatusProvider:
         import futu  # type: ignore[import-not-found]  # 本体と統一 (moomoo と二重 import すると protobuf 重複登録で衝突)
 
         ret, df = ctx.accinfo_query(trd_env=env)
-        if ret != futu.RET_OK or df is None or df.empty:
+        if ret != futu.RET_OK:
+        # 失敗と「建玉ゼロ」を区別する。空を返すと sell_guard / target_reconcile が
+        # 「建玉なし」と判断して正当な決済を skip し、発注途絶 watchdog も ordered と
+        # 誤判定して沈黙する（両者の docstring が例外の伝播を契約としている）
+            raise RuntimeError(f"口座情報の取得に失敗しました: {df}")
+        if df is None or df.empty:
             return AccountSummary()
         row = df.iloc[0]
         return AccountSummary(
@@ -157,7 +173,12 @@ class MoomooStatusProvider:
         import futu  # type: ignore[import-not-found]  # 本体と統一 (moomoo と二重 import すると protobuf 重複登録で衝突)
 
         ret, df = ctx.position_list_query(trd_env=env)
-        if ret != futu.RET_OK or df is None or df.empty:
+        if ret != futu.RET_OK:
+        # 失敗と「建玉ゼロ」を区別する。空を返すと sell_guard / target_reconcile が
+        # 「建玉なし」と判断して正当な決済を skip し、発注途絶 watchdog も ordered と
+        # 誤判定して沈黙する（両者の docstring が例外の伝播を契約としている）
+            raise RuntimeError(f"建玉の取得に失敗しました: {df}")
+        if df is None or df.empty:
             return []
         out: list[PositionRecord] = []
         for _, row in df.iterrows():
@@ -182,7 +203,12 @@ class MoomooStatusProvider:
         import futu  # type: ignore[import-not-found]  # 本体と統一 (moomoo と二重 import すると protobuf 重複登録で衝突)
 
         ret, df = ctx.order_list_query(trd_env=env, start=start, end=end)
-        if ret != futu.RET_OK or df is None or df.empty:
+        if ret != futu.RET_OK:
+        # 失敗と「建玉ゼロ」を区別する。空を返すと sell_guard / target_reconcile が
+        # 「建玉なし」と判断して正当な決済を skip し、発注途絶 watchdog も ordered と
+        # 誤判定して沈黙する（両者の docstring が例外の伝播を契約としている）
+            raise RuntimeError(f"注文一覧の取得に失敗しました: {df}")
+        if df is None or df.empty:
             return []
         out: list[OrderRecord] = []
         for _, row in df.iterrows():

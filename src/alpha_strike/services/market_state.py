@@ -18,6 +18,7 @@ import os
 from typing import Protocol
 
 from alpha_strike.log_sanitize import safe_for_log
+from alpha_strike.services.moomoo_connect import apply_connect_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +49,15 @@ class MoomooMarketStateProvider:
     def get_market_state(self, codes: list[str]) -> dict[str, str]:
         import futu  # type: ignore[import-not-found]
 
-        ctx = futu.OpenQuoteContext(host=self.host, port=self.port)
+        # is_async_connect=True でコンストラクタの無限リトライを回避し、接続待ちは
+        # set_sync_query_connect_timeout で打ち切る（詳細は moomoo_connect.py）
+        ctx = futu.OpenQuoteContext(
+            host=self.host, port=self.port, is_async_connect=True
+        )
         try:
+            # try の内側に置く: ここで例外が出ても finally で close() し、
+            # async 接続が起動した再接続タイマー（非 daemon）を残さない
+            apply_connect_timeout(ctx)
             ret, df = ctx.get_market_state(codes)
             if ret != futu.RET_OK or df is None or getattr(df, "empty", True):
                 return {}

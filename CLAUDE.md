@@ -48,6 +48,7 @@ TradingView → `POST /webhook` → `webhook_server.py` → `OrderRouter` → `B
 - `status_service.py` / `status_auth.py` — 口座ステータス API（`/status`）とそのトークン認証。
 - `notifier.py` — ntfy 通知。
 - `signal_watchdog.py` — シグナル途絶の検知と通知。**v1.3.0 以降はサーバー内の常駐ループではなく、`alpha-strike-watchdog` console script（systemd timer）から単発実行される**。本体のイベントループ凍結やプロセス停止に道連れにされないための分離。
+- `order_watchdog.py` — 発注途絶の検知と通知。**`signal_watchdog` が「シグナルが届かない」を見るのに対し、こちらは「シグナルは届いたのに発注まで到達していない」を見る**。`alpha-strike-watchdog` が 2 本目のチェックとして実行する。
 
 **データモデル** (`models.py`):
 - `WebhookPayload` — リクエストの入力スキーマ（`broker: Literal["oanda", "moomoo"]`）
@@ -98,4 +99,8 @@ moomoo の銘柄コードは `US.AAPL`、`HK.00700` 形式。
 | `SIGNAL_WATCHDOG_THRESHOLD_HOURS` | 途絶と判定する実効時間（土日除外、デフォルト `60`）。正常な週末跨ぎは実効 29h、米国祝日込みで 53h のため 2 セッション欠落で発報する |
 | `SIGNAL_WATCHDOG_RENOTIFY_HOURS` | 途絶継続中の再通知の最小間隔（デフォルト `24`） |
 | `SIGNAL_WATCHDOG_BROKER` | 監視対象 broker（デフォルト `moomoo`）。イベントの書き込み先ファイル名にも使う |
+| `MOOMOO_CONNECT_TIMEOUT_SECONDS` | OpenD 接続待ちクエリのタイムアウト秒（デフォルト `10.0`）。futu SDK のコンテキスト生成は既定で出口のない無限リトライに入るため、`is_async_connect=True` と対で有界化している |
+| `ORDER_WATCHDOG_ENABLED` | 発注途絶の監視。`1`（デフォルト）または `0`。**シグナルは届いているのに発注まで到達していない**状態を検知する。`SIGNAL_WATCHDOG_*` と同じく `alpha-strike-watchdog` から実行される |
+| `ORDER_WATCHDOG_GRACE_MINUTES` | 発注の痕跡が無いシグナルを異常と判定するまでの猶予（暦分、デフォルト `30`）。相関イベントは同一リクエスト内で秒単位に書かれるため 30 分で十分 |
+| `ORDER_WATCHDOG_RENOTIFY_HOURS` | 発注途絶継続中の再通知の最小間隔（デフォルト `24`） |
 | `STATUS_API_TOKEN` | `/status` API の Bearer トークン |

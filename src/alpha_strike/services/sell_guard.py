@@ -63,7 +63,7 @@ def resolve_sell_quantity(
 
     ``status_provider.get_status()`` の例外は **握り潰さず伝播** させる。
     判定不能（OpenD 障害等）時に「正当な決済を skip する」副作用を避けるため、
-    fail-open（従来通り broker へ委ねる）の判断は呼び出し側の責務とする。
+    扱いは呼び出し側に委ねる。呼び出し側は fail-closed（照会に失敗したら発注しない）で扱う。
     """
     status = status_provider.get_status()
     available = 0.0

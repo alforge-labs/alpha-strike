@@ -50,6 +50,7 @@ from alpha_strike.models import (
     WebhookPayload,
 )
 from alpha_strike.services.carryover import (
+    STATUS_UNAVAILABLE_ERROR_TYPE,
     build_carryover_queued_event,
     carryover_resubmit_loop,
     get_carryover_interval,
@@ -113,6 +114,10 @@ _ORDER_LOCK = threading.Lock()
 # 打ち切って 503 を返せば、永久に固まるのは route を掴んだ 1 本だけになる。
 # 併せて、OpenD 復旧時に数日前の陳腐化シグナルが一斉発注されるのも防ぐ。
 _ORDER_LOCK_TIMEOUT_SECONDS = 30.0
+
+# 口座照会の失敗で発注を止めた（fail-closed）ときの 502 の detail。
+# /status が返す 502（照会そのものの失敗）と区別できるよう、発注を止めた旨を明示する。
+_STATUS_UNAVAILABLE_DETAIL = "broker status unavailable — order blocked (fail-closed)"
 
 
 DEFAULT_MAINTENANCE_FILE = "/etc/alpha-strike/MAINTENANCE"
@@ -317,6 +322,98 @@ def _record_skipped_order(
     )
 
 
+def _record_lock_timeout(
+    payload: WebhookPayload,
+    *,
+    signal_id: str,
+    internal_order_id: str,
+    started_at: float,
+) -> None:
+    """発注ロックを取れずに 503 を返す事実を失敗イベントとして残す。
+
+    この raise は ``try:`` ブロックの外で起きるため、記録しないと**イベントログに
+    何の痕跡も残らない**。2026-10-12 の障害で 7 営業日ぶん「シグナルはあるのに
+    発注の痕跡が無い」という読み取りしかできなかったのがこれである。
+    """
+    latency_ms = int((perf_counter() - started_at) * 1000)
+    event_logger.append(
+        OrderEvent(
+            event_id=_generate_id("evt"),
+            signal_id=signal_id,
+            order_id=internal_order_id,
+            occurred_at=datetime.now(),
+            broker=payload.broker,
+            asset_class=payload.asset_class,
+            action=payload.action,
+            ticker=payload.ticker,
+            quantity=payload.quantity,
+            status="failed",
+            request_latency_ms=latency_ms,
+            strategy_id=payload.strategy_id,
+            strategy_version=payload.strategy_version,
+            snapshot_id=payload.snapshot_id,
+            run_mode=payload.run_mode,
+            error_type="OrderLockTimeout",
+            portfolio_id=payload.portfolio_id,
+            sub_strategy_id=payload.sub_strategy_id,
+        )
+    )
+    logger.error(
+        "発注ロックを %.1f 秒で取得できませんでした: ticker=%s signal_id=%s",
+        _ORDER_LOCK_TIMEOUT_SECONDS,
+        safe_for_log(payload.ticker),
+        safe_for_log(signal_id),
+    )
+
+
+def _record_status_unavailable(
+    payload: WebhookPayload,
+    *,
+    signal_id: str,
+    internal_order_id: str,
+    started_at: float,
+    stage: str,
+    exc: Exception,
+) -> None:
+    """口座照会の失敗で発注を止めた（fail-closed）事実を失敗イベントとして残す。
+
+    この経路は broker へ送らずに 502 で抜けるため、記録しないとイベントログに
+    痕跡が残らず、発注途絶 watchdog も鳴らない。``stage`` はどの判定
+    （``target_reconcile`` / ``sell_guard``）で止めたかをログに残すためのもの。
+    """
+    latency_ms = int((perf_counter() - started_at) * 1000)
+    event_logger.append(
+        OrderEvent(
+            event_id=_generate_id("evt"),
+            signal_id=signal_id,
+            order_id=internal_order_id,
+            occurred_at=datetime.now(),
+            broker=payload.broker,
+            asset_class=payload.asset_class,
+            action=payload.action,
+            ticker=payload.ticker,
+            quantity=payload.quantity,
+            status="failed",
+            request_latency_ms=latency_ms,
+            strategy_id=payload.strategy_id,
+            strategy_version=payload.strategy_version,
+            snapshot_id=payload.snapshot_id,
+            run_mode=payload.run_mode,
+            error_type=STATUS_UNAVAILABLE_ERROR_TYPE,
+            portfolio_id=payload.portfolio_id,
+            sub_strategy_id=payload.sub_strategy_id,
+        )
+    )
+    logger.error(
+        "口座照会に失敗したため発注を止めました (fail-closed): "
+        "stage=%s ticker=%s signal_id=%s error=%s",
+        stage,
+        safe_for_log(payload.ticker),
+        safe_for_log(signal_id),
+        safe_for_log(exc),
+    )
+
+
 def _record_carryover_queued(payload: WebhookPayload, *, signal_id: str) -> OrderResult:
     """クローズ後着シグナルを carry-over キューへ入れ（broker へ送らず）応答を構築する (#89)。
 
@@ -436,6 +533,12 @@ def receive_webhook(
     # 継承）で再発注する。判定不能 / 開場中 / REAL / 非 US は従来どおり即発注する。
     # guards は再発注時に open 時点の実保有で評価させるため、ここでは原シグナルを保持する。
     if not _ORDER_LOCK.acquire(timeout=_ORDER_LOCK_TIMEOUT_SECONDS):
+        _record_lock_timeout(
+            payload,
+            signal_id=signal_id,
+            internal_order_id=internal_order_id,
+            started_at=started_at,
+        )
         raise HTTPException(status_code=503, detail="broker busy — retry later")
     try:
         market_state_provider = getattr(request.app.state, "market_state_provider", None)
@@ -447,7 +550,8 @@ def receive_webhook(
         # target_qty 再解決 (#80): payload が目標絶対保有量を持つ場合、broker の実保有
         # との差分から発注 side / quantity を解決する（closed-loop）。open-loop desync で
         # Pine の delta がズレていても、次のシグナルで実保有が target へ収束する。
-        # 判定不能（OpenD 障害等）は fail-open で従来の delta 解釈にフォールバックする。
+        # 判定不能（OpenD 障害等）は fail-closed で発注を止め、failed を記録して 502 を返す。
+        # 参照用の接続だけが死ぬ部分障害で delta のまま発注すると空売りになりうるため。
         if payload.target_qty is not None and is_target_reconcile_enabled():
             if payload.broker != "moomoo":
                 logger.warning(
@@ -461,13 +565,18 @@ def receive_webhook(
                 if reconcile_provider is not None:
                     try:
                         target_decision = resolve_target_order(payload, reconcile_provider)
-                    except Exception as exc:  # noqa: BLE001 — fail-open（delta のまま発注継続）
-                        logger.warning(
-                            "target reconcile 判定失敗 (fail-open で delta 発注): "
-                            "ticker=%s error=%s",
-                            safe_for_log(payload.ticker),
-                            exc,
+                    except Exception as exc:  # noqa: BLE001 — fail-closed（発注を止める）
+                        _record_status_unavailable(
+                            payload,
+                            signal_id=signal_id,
+                            internal_order_id=internal_order_id,
+                            started_at=started_at,
+                            stage="target_reconcile",
+                            exc=exc,
                         )
+                        raise HTTPException(
+                            status_code=502, detail=_STATUS_UNAVAILABLE_DETAIL
+                        ) from exc
                     else:
                         if target_decision.action == "skip":
                             return _record_skipped_order(
@@ -488,7 +597,8 @@ def receive_webhook(
         # over-sell ガード: moomoo の SELL は broker の実保有 (can_sell_qty) を超えないよう
         # clamp / skip する。Pine→webhook→broker の open-loop desync で実保有を超える SELL
         # （"Not enough positions"）や建玉ゼロの空売りが届くため、broker 境界で根絶する。
-        # 判定不能（OpenD 障害等）は fail-open で従来通り発注に委ねる。
+        # 判定不能（OpenD 障害等）は fail-closed で発注を止め、failed を記録して 502 を返す。
+        # 参照用の接続だけが死ぬ部分障害で建玉チェック無しの SELL を通すと空売りになりうるため。
         if (
             is_sell_guard_enabled()
             and payload.broker == "moomoo"
@@ -498,12 +608,18 @@ def receive_webhook(
             if sell_guard_provider is not None:
                 try:
                     decision = resolve_sell_quantity(payload, sell_guard_provider)
-                except Exception as exc:  # noqa: BLE001 — fail-open（従来通り broker に委ねる）
-                    logger.warning(
-                        "sell guard 判定失敗 (fail-open で発注継続): ticker=%s error=%s",
-                        safe_for_log(payload.ticker),
-                        exc,
+                except Exception as exc:  # noqa: BLE001 — fail-closed（発注を止める）
+                    _record_status_unavailable(
+                        payload,
+                        signal_id=signal_id,
+                        internal_order_id=internal_order_id,
+                        started_at=started_at,
+                        stage="sell_guard",
+                        exc=exc,
                     )
+                    raise HTTPException(
+                        status_code=502, detail=_STATUS_UNAVAILABLE_DETAIL
+                    ) from exc
                 else:
                     if decision.action == "skip":
                         return _record_skipped_order(

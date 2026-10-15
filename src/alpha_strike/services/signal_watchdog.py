@@ -97,8 +97,11 @@ def is_signal_watchdog_enabled() -> bool:
     return os.getenv(_ENABLED_ENV_VAR, "1").strip().lower() in _TRUTHY
 
 
-def _positive_float_env(name: str, default: float) -> float:
-    """正の float 環境変数。不正値・0 以下は既定へフォールバックする。"""
+def positive_float_env(name: str, default: float) -> float:
+    """正の float 環境変数。不正値・0 以下は既定へフォールバックする。
+
+    ``order_watchdog`` と共有するため公開名にしている。
+    """
     raw = os.getenv(name, str(default))
     try:
         value = float(raw)
@@ -110,17 +113,17 @@ def _positive_float_env(name: str, default: float) -> float:
 
 def get_signal_watchdog_interval() -> float:
     """チェック間隔（秒）。既定 3600 秒（しきい値 60h に対し 1 時間毎で十分）。"""
-    return _positive_float_env(_INTERVAL_ENV_VAR, DEFAULT_INTERVAL_SECONDS)
+    return positive_float_env(_INTERVAL_ENV_VAR, DEFAULT_INTERVAL_SECONDS)
 
 
 def get_signal_watchdog_threshold_hours() -> float:
     """途絶と判定する実効時間（土日除外）。既定 60 時間。"""
-    return _positive_float_env(_THRESHOLD_ENV_VAR, DEFAULT_THRESHOLD_HOURS)
+    return positive_float_env(_THRESHOLD_ENV_VAR, DEFAULT_THRESHOLD_HOURS)
 
 
 def get_signal_watchdog_renotify_hours() -> float:
     """途絶継続中の再通知の最小間隔（時間）。既定 24 時間。"""
-    return _positive_float_env(_RENOTIFY_ENV_VAR, DEFAULT_RENOTIFY_HOURS)
+    return positive_float_env(_RENOTIFY_ENV_VAR, DEFAULT_RENOTIFY_HOURS)
 
 
 def get_signal_watchdog_broker() -> str:

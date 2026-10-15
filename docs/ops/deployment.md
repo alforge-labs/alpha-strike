@@ -140,15 +140,63 @@ sudo systemctl start alpha-strike-watchdog.service   # 手動 1 回実行
 journalctl -u alpha-strike-watchdog -n 20
 ```
 
-`signal watchdog: 最終受信=... 実効 ...h / しきい値 ...h` というログ行が出ること。
+`journalctl -u alpha-strike-watchdog -n 20` に **2 行**出ること。
+
+```
+signal watchdog: 最終受信=... 実効 ...h / しきい値 ...h
+order watchdog: signal_id=... 判定 N 件（正常 M / 異常 K / 保留 P）
+```
+
 **起動ログだけでは「動いている」の確認にならない**ので、この行を見ること。
 
-**確認基準は「`最終受信=` が `None` でないこと」。** `最終受信=None 実効 0.0h` と出た場合は
-この行自体は出ているため一見機能しているように見えるが、実際は監視できていない —
-watchdog プロセスが本体プロセスと異なる `.env`（異なる `LIVE_EVENTS_PATH`）を読んでいる
-食い違いを疑うこと（`alpha-strike-watchdog` の `WorkingDirectory` が `/opt/alpha-strike`
-になっているか、`EnvironmentFile` が本体と同じ `/etc/alpha-strike/.env` を指しているかを
-確認する）。
+**確認基準は 2 つです。**
+
+1. `最終受信=` が `None` でないこと（`None` は `LIVE_EVENTS_PATH` の食い違い）
+2. `order watchdog` の行で **判定件数が 0 でないこと**。0 件なら `signal_received` を
+   読めていないので、同じく `LIVE_EVENTS_PATH` を疑う
+
+`最終受信=None 実効 0.0h` と出た場合は、この行自体は出ているため一見機能しているように
+見えるが、実際は監視できていない。watchdog プロセスが本体プロセスと異なる `.env`
+（異なる `LIVE_EVENTS_PATH`）を読んでいる食い違いを疑うこと（`alpha-strike-watchdog` の
+`WorkingDirectory` が `/opt/alpha-strike` になっているか、`EnvironmentFile` が本体と同じ
+`/etc/alpha-strike/.env` を指しているかを確認する）。
+
+**新しい systemd unit は増えません。** 既存の `alpha-strike-watchdog.service` が
+2 本のチェックを実行するようになるだけです。
+
+### futu-api のバージョン確認（v1.4.0 で追加）
+
+トレード系コンテキストの有界化は futu SDK の内部実装（`_init_connect_sync` /
+`_wait_reconnect`）に依存します。SDK 更新でこれが変わると**最初の発注で RuntimeError**
+になります（黙ってハングするよりは良いですが、発注 1 件を落とします）。
+
+```bash
+/opt/alpha-strike/.venv/bin/python -c "import futu; print(futu.__version__)"
+```
+
+動作確認済みのバージョンは **10.09.6908**（`uv.lock` 表記では `10.9.6908`）です。
+`futu.__version__` はゼロ埋めの `10.09.6908` を返し、`uv.lock` と `uv pip show` は
+`10.9.6908` と表記しますが、同じ版です。
+
+これと違う場合は、デプロイ後に `/status` が HTTP 200 **かつ `account` の値（`total_assets` 等）が `None`（JSON では `null`）でない**
+ことを必ず確認してください（OpenD に接続できないと `/status` は 502 `Connect timeout` を返します）。
+SDK 不一致の確認は、口座と建玉の中身まで見る次節の「SIMULATE スモークテスト」で行ってください
+（`order watchdog` のログ行は futu を一切使わないので、SDK 不一致の確認にはなりません）。
+
+### SIMULATE スモークテスト（v1.4.0 で追加・必須）
+
+**健全な OpenD に対する発注の往復は CI でカバーできていません。** 有界化はサブクラスで
+SDK の非同期接続分岐を再現しているため、「OpenD が死んでいるとき有界時間で戻る」ことは
+自動テストで固定していますが、「OpenD が生きているとき今までどおり発注できる」ことは
+偽 OpenD に対する手動確認のみです（偽 OpenD は InitConnect にしか応答しません）。
+
+したがって**デプロイ後、市場オープン中に次の 2 つを必ず実地で確認してください**。
+
+1. `/status` が HTTP 200 で口座と建玉を返すこと（参照経路）
+2. **実際に 1 件発注が通ること**（発注経路）。次のシグナルが `order_recorded` →
+   `order_reconciled` まで到達するのを確認する。carry-over 経由なら寄付の直後に出る
+
+これを飛ばすと、**参照はできるのに発注だけ落ちる**状態に気づけません。
 
 ## 3. status API のネットワーク保護（Cloudflare Access）
 
