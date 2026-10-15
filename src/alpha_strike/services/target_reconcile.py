@@ -70,8 +70,8 @@ def resolve_target_order(
     （open-loop desync では「減らす」つもりの sell が実際は不足、の逆転が起きる）。
 
     ``status_provider.get_status()`` の例外は **握り潰さず伝播** させる。
-    判定不能（OpenD 障害等）時の fail-open（従来 delta のまま発注継続）の判断は
-    呼び出し側の責務とする（sell_guard と同じ方針）。
+    判定不能（OpenD 障害等）時の扱いは呼び出し側に委ね、呼び出し側は fail-closed
+    （照会に失敗したら発注しない）で扱う（sell_guard と同じ方針）。
     """
     if payload.target_qty is None:
         raise ValueError("target_qty が未指定の payload は解決できない")

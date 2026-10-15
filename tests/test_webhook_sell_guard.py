@@ -191,3 +191,95 @@ async def test_buy_is_not_affected_by_guard(client, monkeypatch):
     assert resp.status_code == 200
     assert len(calls) == 1
     assert calls[0].quantity == 3.0
+
+
+class _BrokenProvider:
+    """口座照会が失敗する provider（OpenD 再起動中などの参照用接続だけの障害）。"""
+
+    def get_status(self, *, trd_env: str | None = None) -> AccountStatus:
+        raise RuntimeError("OpenD down")
+
+
+@pytest.mark.anyio
+async def test_provider_failure_fails_closed(client, monkeypatch):
+    """照会失敗 → broker へ送らず failed(StatusUnavailable) を 1 件だけ残して 502。
+
+    ユーザーの判断で fail-open から fail-closed に変更した。参照用の接続だけが死に
+    発注用は通る部分障害で、建玉チェック無しの SELL が空売りになりうるため。
+    failed が 1 件だけであること（外側の失敗記録と二重にならないこと）も固定する。
+    二重に書かれると watchdog の失敗件数が水増しされる。
+    """
+    from unittest.mock import patch
+
+    monkeypatch.setenv("MOOMOO_SELL_POSITION_GUARD", "1")
+    app.state.status_provider = _BrokenProvider()
+    calls: list = []
+    with patch(
+        "alpha_strike.handlers.moomoo_handler.MoomooHandler.execute",
+        _capturing_execute(calls),
+    ):
+        resp = await client.post("/webhook", json=_moomoo_sell(3.0))
+
+    assert resp.status_code == 502
+    assert "fail-closed" in resp.json()["detail"]
+    assert calls == []
+    orders = _order_events(client._tmp_path)
+    assert [(o["status"], o["error_type"]) for o in orders] == [
+        ("failed", "StatusUnavailable")
+    ]
+
+
+@pytest.mark.anyio
+async def test_fail_closed_releases_order_lock(client, monkeypatch):
+    """fail-closed の 502 の後もロックは解放され、次のシグナルが処理される。
+
+    ロックを握ったまま抜けると以降の全シグナルが 503（broker busy）になり、
+    発注が丸ごと止まる。
+    """
+    from unittest.mock import patch
+
+    from alpha_strike.webhook_server import _ORDER_LOCK
+
+    monkeypatch.setenv("MOOMOO_SELL_POSITION_GUARD", "1")
+    app.state.status_provider = _BrokenProvider()
+    calls: list = []
+    with patch(
+        "alpha_strike.handlers.moomoo_handler.MoomooHandler.execute",
+        _capturing_execute(calls),
+    ):
+        first = await client.post("/webhook", json=_moomoo_sell(3.0))
+        assert first.status_code == 502
+        assert _ORDER_LOCK.acquire(blocking=False)
+        _ORDER_LOCK.release()
+
+        app.state.status_provider = _provider_with(
+            PositionRecord(code="US.TQQQ", qty=3.0, can_sell_qty=3.0)
+        )
+        second = await client.post("/webhook", json=_moomoo_sell(3.0))
+
+    assert second.status_code == 200
+    assert len(calls) == 1
+    orders = _order_events(client._tmp_path)
+    assert [o["status"] for o in orders] == ["failed", "accepted"]
+
+
+@pytest.mark.anyio
+async def test_no_status_provider_passes_sell_through(client, monkeypatch):
+    """status_provider 未設定はガードを使わない構成 → 従来どおり発注する。
+
+    照会の失敗ではないので fail-closed にしない（全発注が止まるのを防ぐ）。
+    """
+    from unittest.mock import patch
+
+    monkeypatch.setenv("MOOMOO_SELL_POSITION_GUARD", "1")
+    app.state.status_provider = None
+    calls: list = []
+    with patch(
+        "alpha_strike.handlers.moomoo_handler.MoomooHandler.execute",
+        _capturing_execute(calls),
+    ):
+        resp = await client.post("/webhook", json=_moomoo_sell(3.0))
+
+    assert resp.status_code == 200
+    assert len(calls) == 1
+    assert calls[0].quantity == 3.0

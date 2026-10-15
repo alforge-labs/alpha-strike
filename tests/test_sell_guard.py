@@ -108,8 +108,8 @@ def test_skip_when_ticker_not_held():
     assert decision.action == "skip"
 
 
-def test_provider_exception_propagates_for_fail_open_at_caller():
-    """provider 例外は握り潰さず伝播させる（呼び出し側で fail-open 判断するため）。"""
+def test_provider_exception_propagates_for_caller_decision():
+    """provider 例外は握り潰さず伝播させる（扱いは呼び出し側が決める。呼び出し側は fail-closed で扱う）。"""
 
     class _Boom:
         def get_status(self, *, trd_env: str | None = None) -> AccountStatus:

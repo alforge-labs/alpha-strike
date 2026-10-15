@@ -7,8 +7,10 @@ WHY: OpenD 呼び出しの有界化で、OpenD が死ぬとクエリは無限ハ
 （2026-10-12 の発注欠落と同じ「黙った欠落」の再来）。
 
 ここで固定するのは「status が使えないとき、決済シグナルは決して ``skipped`` に
-ならない」こと。webhook 側のガード例外は fail-open（#74/#80 の意図された設計）なので、
-全面障害なら ``failed``、参照用だけ死んだ部分障害なら ``accepted`` になる。
+ならない」こと。webhook 側のガード例外は fail-closed（照会に失敗したら発注しない）なので、
+全面障害でも参照用だけ死んだ部分障害でも ``failed`` になる。部分障害で ``accepted``
+（建玉チェック無しの発注）を許すと空売りになりうるため、ユーザーの判断で fail-open から
+fail-closed に変更した。
 """
 
 from __future__ import annotations
@@ -178,7 +180,11 @@ def _moomoo_sell() -> dict:
 
 @pytest.mark.anyio
 async def test_全面障害の決済シグナルはfailedで記録される(client):
-    """status も発注も死んでいる → failed（watchdog が鳴る経路）。skipped にしない。"""
+    """status も発注も死んでいる → failed（watchdog が鳴る経路）。skipped にしない。
+
+    fail-closed 以降は照会の段階で止まるため、発注用の接続（``_broker_dead``）には到達しない。
+    それでも残すのは、全面障害で「黙って skipped になる」C-1 の退行を固定するため。
+    """
 
     def _broker_dead(self, payload):  # noqa: ANN001
         raise RuntimeError(_CONNECT_TIMEOUT)
@@ -189,12 +195,18 @@ async def test_全面障害の決済シグナルはfailedで記録される(clie
         await client.post("/webhook", json=_moomoo_sell())
 
     orders = _order_events(client._tmp_path)
-    assert [o["status"] for o in orders] == ["failed"]
+    assert [(o["status"], o.get("error_type")) for o in orders] == [
+        ("failed", "StatusUnavailable")
+    ]
 
 
 @pytest.mark.anyio
-async def test_参照用だけ死んだら決済シグナルはfail_openで発注される(client):
-    """status だけ死んで発注は通る → fail-open（#74 の設計）で accepted。skipped にしない。"""
+async def test_参照用だけ死んだら決済シグナルはfail_closedで発注しない(client):
+    """status だけ死んで発注は通る → fail-closed で broker へ送らず failed。skipped にしない。
+
+    ユーザーの判断で fail-open から fail-closed に変更した。部分障害で建玉チェック無しの
+    発注を通すと、Pine の数量計算が実際の建玉とずれていれば空売りになりうるため。
+    """
     calls: list = []
 
     def _execute(self, payload):  # noqa: ANN001
@@ -204,10 +216,12 @@ async def test_参照用だけ死んだら決済シグナルはfail_openで発�
     with patch("alpha_strike.handlers.moomoo_handler.MoomooHandler.execute", _execute):
         resp = await client.post("/webhook", json=_moomoo_sell())
 
-    assert resp.status_code == 200
-    assert len(calls) == 1
+    assert resp.status_code == 502
+    assert calls == []
     orders = _order_events(client._tmp_path)
-    assert [o["status"] for o in orders] == ["accepted"]
+    assert [(o["status"], o["error_type"]) for o in orders] == [
+        ("failed", "StatusUnavailable")
+    ]
 
 
 @pytest.mark.anyio

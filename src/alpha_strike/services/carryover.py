@@ -51,6 +51,10 @@ _TRUTHY = {"1", "true", "yes", "on"}
 DEFAULT_INTERVAL_SECONDS = 300.0
 DEFAULT_LOOKBACK_HOURS = 48.0
 DEFAULT_MAX_RESUBMITS = 3
+
+# 口座照会の失敗で発注を止めた（fail-closed）ときの order_recorded.error_type。
+# webhook 側も同じ値を使う（watchdog・運用者が同じ原因として読めるように）。
+STATUS_UNAVAILABLE_ERROR_TYPE = "StatusUnavailable"
 # queued イベントの走査上限（lookback_hours と二重の安全弁）。日次シグナルは数十件/日
 # 程度のため 500 で 10 日分以上をカバーする。
 _SCAN_LIMIT = 500
@@ -341,6 +345,40 @@ def _record_order(
         logger.warning("carryover order_recorded の記録に失敗: %s", exc)
 
 
+def _block_on_status_unavailable(
+    event_logger: Any,
+    payload: WebhookPayload,
+    *,
+    signal_id: str,
+    internal_order_id: str,
+    idempotency: Any,
+    idem_key: IdempotencyKey,
+    stage: str,
+    exc: Exception,
+) -> None:
+    """口座照会の失敗で再発注を止めた（fail-closed）ことを記録する。
+
+    route 失敗時と同じく、注文を出していないので冪等キーを解放し、failed を記録する。
+    呼び出し側は ``False``（未解消）を返すこと。``True`` にすると intent が永久に消える。
+    未解消のまま次の周回で再試行する。**再試行には回数の上限がある**: ``max_resubmits`` 回
+    （既定 3 回・300 秒間隔でおよそ 10〜15 分）以内に照会が戻れば再発注で通るが、それより長く
+    続くと abandoned になり発注されないまま打ち切られる。``failed`` は毎回記録されるので発注途絶
+    watchdog は鳴り、黙った欠落にはならない。
+    """
+    logger.error(
+        "carryover: 口座照会に失敗したため再発注を止めました (fail-closed): "
+        "stage=%s ticker=%s signal_id=%s error=%s",
+        stage, payload.ticker, signal_id, exc,
+    )
+    if idempotency is not None:
+        idempotency.forget(idem_key)
+    _record_order(
+        event_logger, payload, signal_id=signal_id,
+        internal_order_id=internal_order_id, status="failed",
+        error_type=STATUS_UNAVAILABLE_ERROR_TYPE,
+    )
+
+
 def _resubmit_intent(
     intent: dict,
     *,
@@ -376,16 +414,24 @@ def _resubmit_intent(
     payload = _reconstruct_payload(intent)
     internal_order_id = _generate_id("ord")
 
-    # target_qty 再解決（#80 を継承）。fail-open（判定不能なら従来 delta で発注継続）。
+    # target_qty 再解決（#80 を継承）。判定不能（照会失敗）は fail-closed で発注せず
+    # 未解消として次の周回へ回す。部分障害で delta のまま発注すると空売りになりうるため。
+    # status_provider 未設定はガードを使わない構成なので従来どおり飛ばす（webhook と同じ）。
     if (
         payload.target_qty is not None
         and is_target_reconcile_enabled()
         and payload.broker == "moomoo"
+        and status_provider is not None
     ):
         try:
             decision = resolve_target_order(payload, status_provider)
-        except Exception as exc:  # noqa: BLE001 — fail-open
-            logger.warning("carryover target reconcile 失敗 (fail-open): %s", exc)
+        except Exception as exc:  # noqa: BLE001 — fail-closed（未解消として再試行へ）
+            _block_on_status_unavailable(
+                event_logger, payload, signal_id=co_id,
+                internal_order_id=internal_order_id, idempotency=idempotency,
+                idem_key=idem_key, stage="target_reconcile", exc=exc,
+            )
+            return False
         else:
             if decision.action == "skip":
                 _record_order(
@@ -397,16 +443,23 @@ def _resubmit_intent(
                 update={"action": decision.side, "quantity": decision.quantity}
             )
 
-    # over-sell ガード（#74 を継承）。fail-open。
+    # over-sell ガード（#74 を継承）。判定不能（照会失敗）は fail-closed で発注せず
+    # 未解消として次の周回へ回す（建玉チェック無しの SELL は空売りになりうるため）。
     if (
         is_sell_guard_enabled()
         and payload.broker == "moomoo"
         and payload.action == "sell"
+        and status_provider is not None
     ):
         try:
             decision = resolve_sell_quantity(payload, status_provider)
-        except Exception as exc:  # noqa: BLE001 — fail-open
-            logger.warning("carryover sell guard 失敗 (fail-open): %s", exc)
+        except Exception as exc:  # noqa: BLE001 — fail-closed（未解消として再試行へ）
+            _block_on_status_unavailable(
+                event_logger, payload, signal_id=co_id,
+                internal_order_id=internal_order_id, idempotency=idempotency,
+                idem_key=idem_key, stage="sell_guard", exc=exc,
+            )
+            return False
         else:
             if decision.action == "skip":
                 _record_order(
